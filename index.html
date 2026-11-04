@@ -32,6 +32,7 @@ button:disabled{opacity:.35;pointer-events:none}
 #empty{position:absolute;inset:10px 10px 200px;border:2px dashed var(--line);border-radius:16px;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:8px;color:var(--sub);text-align:center;cursor:pointer;font-size:14px}
 #empty b{color:var(--fg);font-size:16px}
+#bFit{position:absolute;right:8px;top:6px;z-index:3;font-size:12px;padding:6px 10px;background:rgba(30,30,34,.8)}
 #badge{position:absolute;left:50%;top:4px;z-index:2;transform:translateX(-50%);font-size:11px;color:var(--sub);background:rgba(0,0,0,.5);padding:2px 8px;border-radius:99px;pointer-events:none;white-space:nowrap}
 #dock{position:fixed;left:0;right:0;bottom:0;z-index:5;background:rgba(16,16,18,.68);-webkit-backdrop-filter:blur(14px) saturate(1.2);backdrop-filter:blur(14px) saturate(1.2);
   border-top:1px solid rgba(255,255,255,.08);padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
@@ -90,6 +91,7 @@ dialog select{font:inherit;width:100%;background:#26262b;color:var(--fg);border:
   <canvas id="view" width="1" height="1" hidden></canvas>
   <div id="empty"><b>タップして画像を開く</b>ドラッグ＆ドロップ・貼り付けもOK<br><small>画像は端末内だけで処理されます</small></div>
   <div id="badge" hidden></div>
+  <button id="bFit" hidden title="表示を元に戻す">⤢ 全体表示</button>
 </div>
 
 <div id="dock">
@@ -151,7 +153,6 @@ let mos={type:'pixel', size:12};
 let blurMask=null, blurAuto=null, blurMaskSrc=null, blurState='', blurDirty=true, blurPrev=null, blurOv=null, blurredCache=null, blurBrush='add', showMask=true, segmenter=null;
 const clone=o=>JSON.parse(JSON.stringify(o));
 let hist=[], hpos=0, sess=null;
-let HY=0, hpan=null;
 let procKind='', Z={z:1,tx:0,ty:0}, brush=16, stroke=null, cursor=null, pointers=new Map(), pinch=null;
 let S = fresh(), src = null, prev = null, processed = null, mode = 'home', comparing = false, dirty = true, raf = 0, drag = null, fileBase = 'image';
 
@@ -318,22 +319,19 @@ function draw(){
 /* 高さモード：横幅を固定し、伸ばした分だけ下に伸びるように表示 / 消しゴム：拡大・移動 */
 function layoutView(){
   const st=view.style, sg=stage.style;
-  if (BRUSH_MODES.has(mode) && !comparing){
-    st.width=st.height=st.marginTop=''; sg.alignItems='';
-    st.transformOrigin='0 0'; st.transform=`translate(${Z.tx}px,${Z.ty}px) scale(${Z.z})`; return;
-  }
-  st.transform='';
-  if (mode!=='height' || comparing){ st.width=st.height=st.marginTop=st.maxHeight=''; sg.alignItems=''; return; }
-  const cs=getComputedStyle(stage);
-  const aw=stage.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight);
-  const ah=stage.clientHeight-parseFloat(cs.paddingTop)-parseFloat(cs.paddingBottom);
-  const wp=processed.width, hp=Math.max(1,Math.round(S.crop.h*prev.height));
-  const k=Math.min(aw/wp, ah/hp), mt=Math.max(0,(ah-hp*k)/2), ch=view.height*k;
-  st.width=(wp*k)+'px'; st.height=ch+'px'; st.marginTop=mt+'px'; st.maxHeight='none';
-  const dh=$('#dock').offsetHeight||0;
-  HY=clamp(HY, Math.min(0, ah-dh-mt-ch), 0);
-  st.transformOrigin='0 0'; st.transform=`translateY(${HY}px)`;
-  sg.alignItems='flex-start';
+  st.transformOrigin='0 0';
+  if (comparing){ st.width=st.height=st.marginTop=st.maxHeight=st.transform=''; sg.alignItems=''; $('#bFit').hidden=true; return; }
+  if (mode==='height'){
+    const cs=getComputedStyle(stage);
+    const aw=stage.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight);
+    const ah=stage.clientHeight-parseFloat(cs.paddingTop)-parseFloat(cs.paddingBottom);
+    const wp=processed.width, hp=Math.max(1,Math.round(S.crop.h*prev.height));
+    const k=Math.min(aw/wp, ah/hp), mt=Math.max(0,(ah-hp*k)/2);
+    st.width=(wp*k)+'px'; st.height=(view.height*k)+'px'; st.marginTop=mt+'px'; st.maxHeight='none'; sg.alignItems='flex-start';
+  } else { st.width=st.height=st.marginTop=st.maxHeight=''; sg.alignItems=''; }
+  clampPan();
+  st.transform=`translate(${Z.tx}px,${Z.ty}px) scale(${Z.z})`;
+  $('#bFit').hidden = Z.z===1 && Z.tx===0 && Z.ty===0;
 }
 function outSize(){
   const sw=Math.round(S.crop.w*src.width), sh=Math.round(S.crop.h*src.height), g=bandGeo(sh);
@@ -685,14 +683,18 @@ function updateBars(){
   $('#bLRedo').disabled = !sess || !sess.redo.length;
 }
 function resetZoom(){ Z={z:1,tx:0,ty:0}; }
+const ZMIN=0.5, ZMAX=8;
 function zoomAt(cx,cy,nz){
-  nz=clamp(nz,1,8); const r=view.getBoundingClientRect(), L=r.left-Z.tx, T=r.top-Z.ty;
+  nz=clamp(nz,ZMIN,ZMAX); const r=view.getBoundingClientRect(), L=r.left-Z.tx, T=r.top-Z.ty;
   const lx=(cx-L-Z.tx)/Z.z, ly=(cy-T-Z.ty)/Z.z;
   Z.z=nz; Z.tx=cx-L-lx*nz; Z.ty=cy-T-ly*nz; clampPan(); schedule(false);
 }
+/* 画像が画面の外へ逃げないよう、最低限は見える位置に留める */
 function clampPan(){
-  const bw=view.offsetWidth, bh=view.offsetHeight;
-  Z.tx=clamp(Z.tx,bw*(1-Z.z),0); Z.ty=clamp(Z.ty,bh*(1-Z.z),0);
+  const bx=view.offsetLeft, by=view.offsetTop, bw=view.offsetWidth*Z.z, bh=view.offsetHeight*Z.z;
+  const sw=stage.clientWidth, sh=stage.clientHeight-($('#dock').offsetHeight||0);
+  const mx=Math.min(80,bw/2), my=Math.min(80,bh/2);
+  Z.tx=clamp(Z.tx, mx-bx-bw, sw-mx-bx); Z.ty=clamp(Z.ty, my-by-bh, Math.max(my, sh)-my-by);
 }
 function pinchStart(){
   const [a,b]=[...pointers.values()];
@@ -702,56 +704,49 @@ function pinchMove(){
   const [a,b]=[...pointers.values()];
   const d=Math.hypot(a.x-b.x,a.y-b.y)||1, mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
   const r=view.getBoundingClientRect(), L=r.left-Z.tx, T=r.top-Z.ty;
-  const nz=clamp(pinch.z*d/pinch.d,1,8);
+  const nz=clamp(pinch.z*d/pinch.d,ZMIN,ZMAX);
   const lx=(pinch.mx-L-pinch.tx)/pinch.z, ly=(pinch.my-T-pinch.ty)/pinch.z;
   Z.z=nz; Z.tx=mx-L-lx*nz; Z.ty=my-T-ly*nz; clampPan(); schedule(false);
 }
 
 const stage=$('#stage');
+let pan1=null;
 stage.addEventListener('pointerdown',e=>{
   if (!prev) { $('#file').click(); return; }
-  if (comparing) return;
-  if (BRUSH_MODES.has(mode)){
-    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); stage.setPointerCapture(e.pointerId); e.preventDefault();
-    if (pointers.size===2){ stroke=null; pinchStart(); schedule(false); }
-    else if (pointers.size===1 && !pinch){ const p=pt(e); stroke={r:brush*unit(), pts:[p]}; cursor=p; schedule(false); }
-    return;
-  }
-  if (mode==='height'){
-    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    if (pointers.size>=2){ drag=null; const v=[...pointers.values()]; hpan={y0:(v[0].y+v[1].y)/2, HY0:HY}; stage.setPointerCapture(e.pointerId); e.preventDefault(); return; }
-  }
+  if (comparing || e.target.closest('#bFit')) return;
+  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); try{ stage.setPointerCapture(e.pointerId); }catch(_){} e.preventDefault();
+  if (pointers.size===2){ stroke=null; pan1=null; if (drag){ drag=null; schedule(true); recordState(); } pinchStart(); schedule(false); return; }
+  if (pointers.size>2 || pinch) return;
   const p=pt(e), u=unit();
+  if (BRUSH_MODES.has(mode)){ stroke={r:brush*unit(), pts:[p]}; cursor=p; schedule(false); return; }
   drag = mode==='crop' ? cropHit(p,u) : mode==='height' ? bandHit(p,u) : null;
-  if (drag){ stage.setPointerCapture(e.pointerId); e.preventDefault(); }
+  if (!drag) pan1={x:e.clientX,y:e.clientY,tx:Z.tx,ty:Z.ty};
 });
 stage.addEventListener('pointermove',e=>{
-  if (mode==='height' && pointers.has(e.pointerId)){
-    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    if (hpan && pointers.size>=2){ const v=[...pointers.values()]; HY=hpan.HY0+((v[0].y+v[1].y)/2-hpan.y0); schedule(false); return; }
-  }
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if (pinch){ if (pointers.size>=2) pinchMove(); return; }
   if (BRUSH_MODES.has(mode)){
-    if (pointers.has(e.pointerId)) pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    if (pinch && pointers.size>=2){ pinchMove(); return; }
     const p=pt(e); cursor = e.pointerType==='touch' && !stroke ? null : p;
     if (stroke){ const l=stroke.pts[stroke.pts.length-1]; if (Math.hypot(p.x-l.x,p.y-l.y)>stroke.r*0.25) stroke.pts.push(p); }
     schedule(false); return;
   }
-  if (!drag) return; const p=pt(e);
-  if (mode==='crop'){ cropDrag(p,unit()); schedule(true); } else { bandDrag(p); schedule(true); }
+  if (drag){ const p=pt(e); if (mode==='crop') cropDrag(p,unit()); else bandDrag(p); schedule(true); return; }
+  if (pan1){ Z.tx=pan1.tx+(e.clientX-pan1.x); Z.ty=pan1.ty+(e.clientY-pan1.y); clampPan(); schedule(false); }
 });
 ['pointerup','pointercancel'].forEach(ev=>stage.addEventListener(ev,e=>{
+  pointers.delete(e.pointerId);
+  if (pinch){ if (pointers.size===0) pinch=null; return; }
   if (BRUSH_MODES.has(mode)){
-    pointers.delete(e.pointerId);
-    if (pinch){ if (pointers.size===0) pinch=null; return; }
     if (stroke && pointers.size===0){ const st=stroke; stroke=null; if (ev==='pointerup') applyStroke(st); if (e.pointerType==='touch') cursor=null; schedule(false); }
     return;
   }
-  if (mode==='height'){ pointers.delete(e.pointerId); if (hpan){ if (pointers.size<2) hpan=null; return; } }
   if (drag){ drag=null; schedule(true); recordState(); }
+  pan1=null;
 }));
 stage.addEventListener('pointerleave',e=>{ if (BRUSH_MODES.has(mode) && !stroke){ cursor=null; schedule(false); } });
-stage.addEventListener('wheel',e=>{ if (mode==='height'&&prev){ e.preventDefault(); HY-=e.deltaY; schedule(false); return; } if (!BRUSH_MODES.has(mode)||!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
+stage.addEventListener('wheel',e=>{ if (!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
+stage.addEventListener('dblclick',e=>{ if (!prev || BRUSH_MODES.has(mode)) return; resetZoom(); schedule(false); });
+$('#bFit').addEventListener('click',()=>{ resetZoom(); schedule(false); });
 
 /* ---------- 下部パネル（半透明・引き出し式） ---------- */
 const PANEL_MIN=96, grab=$('#grab'), panelEl=$('#panel');
@@ -792,7 +787,7 @@ function renderPanelInner(){
     P.innerHTML = `<div class="chips">${ASPECTS.map(([k,l])=>`<button class="chip${S.aspect===k?' on':''}" data-asp="${k}">${l}</button>`).join('')}</div>
       <div class="btns"><button data-act="rotL">↺ 左回転</button><button data-act="rotR">↻ 右回転</button><button data-act="flip">⇋ 反転</button><button data-act="cropReset">リセット</button></div>`;
   } else if (mode==='height'){
-    P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸縮する範囲を指定。スライダーは中央が0、右で伸ばす・左で縮める。ラベルをダブルタップで0に戻ります。帯の中をドラッグすると範囲ごと移動。伸ばして下にはみ出した分は2本指（PCはホイール）で上下にスクロールできます。</div>
+    P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸縮する範囲を指定。スライダーは中央が0、右で伸ばす・左で縮める。ラベルをダブルタップで0に戻ります。帯の中をドラッグすると範囲ごと移動。はみ出した分は、空いている所をドラッグするか、ピンチで縮小して確認できます。</div>
       ${slider('stretch','伸縮',-40,40,Math.round(S.stretch*100))}
       <div class="scale"><span>◀ 縮める</span><span>0</span><span>伸ばす ▶</span></div>
       ${slider('angle','角度',-45,45,S.angle||0)}
@@ -867,7 +862,7 @@ function flip(){
   setSource(c); S.crop.x=1-S.crop.x-S.crop.w;
 }
 function setMode(m){
-  mode=m; panelOpen=false; resetZoom(); HY=0; hpan=null; stroke=null; cursor=null; pinch=null; pointers.clear();
+  mode=m; panelOpen=false; resetZoom(); pan1=null; stroke=null; cursor=null; pinch=null; pointers.clear();
   if (m!=='home' && !sess) sess={tool:m, ops:[], redo:[], base:clone(S), baseSrc:src};
   $('#tabs').hidden = m!=='home'; $('#actbar').hidden = m==='home';
   if (m!=='home') $('#actName').textContent=TOOL_NAMES[m];
