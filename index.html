@@ -32,8 +32,9 @@ button:disabled{opacity:.35;pointer-events:none}
 #empty b{color:var(--fg);font-size:16px}
 #badge{position:absolute;left:50%;bottom:4px;transform:translateX(-50%);font-size:11px;color:var(--sub);background:rgba(0,0,0,.5);padding:2px 8px;border-radius:99px;pointer-events:none;white-space:nowrap}
 #panel{background:var(--panel);border-top:1px solid var(--line);padding:10px 14px;max-height:40vh;overflow-y:auto;min-height:56px}
-nav{display:flex;background:var(--panel);border-top:1px solid var(--line)}
-nav button{flex:1;border:none;background:none;border-radius:0;padding:9px 0 11px;color:var(--fg);font-size:12px;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative}
+nav{display:flex;background:var(--panel);border-top:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav button{flex:1 0 62px;border:none;background:none;border-radius:0;padding:9px 0 11px;color:var(--fg);font-size:12px;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative}
 nav button .ic{font-size:20px;line-height:1}
 nav button .ok{position:absolute;top:4px;left:calc(50% + 8px);width:16px;height:16px;border-radius:50%;background:var(--acc);color:#fff;font-size:10px;line-height:16px;font-weight:800;display:none}
 nav button.done .ok{display:block}
@@ -87,6 +88,8 @@ dialog select{font:inherit;width:100%;background:#26262b;color:var(--fg);border:
   <button data-m="color"><span class="ic">◐</span>色調<span class="ok">✓</span></button>
   <button data-m="sharp"><span class="ic">◇</span>シャープ<span class="ok">✓</span></button>
   <button data-m="erase"><span class="ic">✎</span>消しゴム<span class="ok">✓</span></button>
+  <button data-m="mosaic"><span class="ic">▦</span>モザイク<span class="ok">✓</span></button>
+  <button data-m="blur"><span class="ic">◎</span>背景ぼかし<span class="ok">✓</span></button>
 </nav>
 <div id="actbar" hidden>
   <button id="bCancel" title="キャンセル">✕</button>
@@ -126,8 +129,12 @@ const ADJ_META = [['exposure','露出'],['brightness','明るさ'],['contrast','
 const ASPECTS = [['9:16','📱 スマホ縦 9:16'],['free','自由'],['orig','元比率'],['1:1','1:1'],['4:5','4:5'],['3:4','3:4'],['2:3','2:3'],['16:9','16:9']];
 const STRETCH_MAX = 0.4;
 
-const fresh = () => ({crop:{x:0,y:0,w:1,h:1}, aspect:'9:16', band:{t:0.55,b:0.97}, stretch:0, adj:{...ADJ_DEF}, sharp:{amount:0,radius:1}});
-const TOOL_NAMES={crop:'トリミング',height:'高さ',color:'色調',sharp:'シャープ',erase:'消しゴム',last:'前回設定'};
+const fresh = () => ({crop:{x:0,y:0,w:1,h:1}, aspect:'9:16', band:{t:0.55,b:0.97}, stretch:0, angle:0, bt:{str:16,fe:4}, adj:{...ADJ_DEF}, sharp:{amount:0,radius:1}});
+const TOOL_NAMES={crop:'トリミング',height:'高さ',color:'色調',sharp:'シャープ',erase:'消しゴム',mosaic:'モザイク',blur:'背景ぼかし',last:'前回設定'};
+const BRUSH_MODES=new Set(['erase','mosaic','blur']);
+const MOS_TYPES=[['pixel','四角'],['dot','ドット'],['blur','すりガラス'],['black','黒塗り']];
+let mos={type:'pixel', size:12};
+let blurMask=null, blurAuto=null, blurMaskSrc=null, blurState='', blurDirty=true, blurPrev=null, blurOv=null, blurredCache=null, blurBrush='add', showMask=true, segmenter=null;
 const clone=o=>JSON.parse(JSON.stringify(o));
 let hist=[], hpos=0, sess=null;
 let procKind='', Z={z:1,tx:0,ty:0}, brush=16, stroke=null, cursor=null, pointers=new Map(), pinch=null;
@@ -158,7 +165,7 @@ async function loadFile(file){
     let w=img.naturalWidth, h=img.naturalHeight; const k=Math.min(1, Math.sqrt(SRC_MAX_PX/(w*h)));
     w=Math.round(w*k); h=Math.round(h*k);
     const c=mk(w,h); ctx(c).drawImage(img,0,0,w,h);
-    S = fresh(); hist=[]; hpos=0; sess=null; resetZoom(); setSource(c); applyAspect();
+    S = fresh(); hist=[]; hpos=0; sess=null; blurMask=null; blurPrev=null; blurOv=null; blurredCache=null; resetZoom(); setSource(c); applyAspect();
     $('#empty').hidden = true; view.hidden = false;
     ['#bSave','#bCmp'].forEach(s=>$(s).disabled=false);
     setMode('home');
@@ -175,8 +182,14 @@ function setSource(c){
 /* ---------- pipeline ---------- */
 function bandGeo(hp){ // hp: cropped (pre-stretch) height
   const y0=Math.round(S.band.t*hp), y1=Math.round(S.band.b*hp), bh=y1-y0;
-  const nb = (S.stretch>0.001 && bh>=2) ? Math.round(bh*(1+S.stretch)) : bh;
+  const cs=Math.cos((S.angle||0)*Math.PI/180);
+  const nb = (S.stretch>0.001 && bh>=2) ? bh+Math.round(bh*S.stretch*cs) : bh;
   return {y0,y1,bh,nb};
+}
+/* 帯の向き（角度付き）：n=伸ばす方向, O=上の線の中心, L=帯の長さ */
+function bandFrame(w,h){
+  const th=(S.angle||0)*Math.PI/180, nx=Math.sin(th), ny=Math.cos(th);
+  return {nx,ny,ox:w/2,oy:S.band.t*h,L:(S.band.b-S.band.t)*h,s:S.stretch>0.001?S.stretch:0};
 }
 function process(base, k, rScale, noStretch){
   const W=base.width, H=base.height, c=S.crop;
@@ -190,11 +203,31 @@ function process(base, k, rScale, noStretch){
 function stretch(c){
   const w=c.width, h=c.height, {y0,y1,bh,nb}=bandGeo(h);
   if (nb===bh) return c;
+  if (S.angle) return stretchAngled(c, h-bh+nb);
   const out=mk(w, h-bh+nb), x=ctx(out);
   if (y0>0) x.drawImage(c,0,0,w,y0,0,0,w,y0);
   x.drawImage(c,0,y0,w,bh,0,y0,w,nb);
   if (h-y1>0) x.drawImage(c,0,y1,w,h-y1,0,y0+nb,w,h-y1);
   return out;
+}
+function stretchAngled(c, H){
+  const w=c.width, h=c.height, F=bandFrame(w,h), {nx,ny,ox,oy,L,s}=F;
+  const sd=ctx(c).getImageData(0,0,w,h).data, out=new ImageData(w,H), od=out.data;
+  const Ls=L*(1+s), shift=L*s, k=s/(1+s);
+  for (let y=0;y<H;y++){
+    for (let x=0;x<w;x++){
+      const v=(x-ox)*nx+(y-oy)*ny; let sx=x, sy=y;
+      if (v>0){ const back = v<Ls ? v*k : shift; sx=x-nx*back; sy=y-ny*back; }
+      sx=sx<0?0:sx>w-1?w-1:sx; sy=sy<0?0:sy>h-1?h-1:sy;
+      const ix=sx|0, iy=sy|0, fx=sx-ix, fy=sy-iy, ix1=ix<w-1?ix+1:ix, iy1=iy<h-1?iy+1:iy;
+      const a=(iy*w+ix)*4, b=(iy*w+ix1)*4, c2=(iy1*w+ix)*4, d=(iy1*w+ix1)*4, o=(y*w+x)*4;
+      for (let ch=0;ch<4;ch++){
+        const top=sd[a+ch]+(sd[b+ch]-sd[a+ch])*fx, bot=sd[c2+ch]+(sd[d+ch]-sd[c2+ch])*fx;
+        od[o+ch]=top+(bot-top)*fy;
+      }
+    }
+  }
+  const oc=mk(w,H); ctx(oc).putImageData(out,0,0); return oc;
 }
 function pixels(cv, rScale){
   const a=S.adj, sp=S.sharp;
@@ -257,18 +290,20 @@ function draw(){
   raf=0; if (!prev) return;
   if (comparing){ blit(prev); layoutView(); badge(); return; }
   if (mode==='crop'){ blit(prev); layoutView(); cropOverlay(); badge(); return; }
-  const kind = mode==='erase' ? 'e' : 'n';
-  if (dirty || procKind!==kind){ processed=process(prev,1,1,kind==='e'); procKind=kind; dirty=false; }
+  const kind = mode==='blur' ? 'b' : BRUSH_MODES.has(mode) ? 'e' : 'n';
+  if (mode==='blur' && blurDirty){ buildBlurPreview(); dirty=true; }
+  if (dirty || procKind!==kind){ processed=process(kind==='b'&&blurPrev?blurPrev:prev,1,1,kind!=='n'); procKind=kind; dirty=false; }
   blit(processed);
   layoutView();
   if (mode==='height') bandOverlay();
-  if (mode==='erase') eraseOverlay();
+  if (mode==='blur') blurMaskOverlay();
+  if (BRUSH_MODES.has(mode)) eraseOverlay();
   badge();
 }
 /* 高さモード：横幅を固定し、伸ばした分だけ下に伸びるように表示 / 消しゴム：拡大・移動 */
 function layoutView(){
   const st=view.style, sg=stage.style;
-  if (mode==='erase' && !comparing){
+  if (BRUSH_MODES.has(mode) && !comparing){
     st.width=st.height=st.marginTop=''; sg.alignItems='';
     st.transformOrigin='0 0'; st.transform=`translate(${Z.tx}px,${Z.ty}px) scale(${Z.z})`; return;
   }
@@ -304,13 +339,19 @@ function cropOverlay(){
   [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]].forEach(([cx,cy,dx,dy])=>{ x2.moveTo(cx+dx*L,cy); x2.lineTo(cx,cy); x2.lineTo(cx,cy+dy*L); });
   x2.stroke(); x2.restore();
 }
+function bandPoints(){
+  const W=view.width, hp=Math.max(1,Math.round(S.crop.h*prev.height)), F=bandFrame(W,hp);
+  const Ls=F.L*(1+F.s);
+  return {F, hp, p1:{x:F.ox,y:F.oy}, p2:{x:F.ox+F.nx*Ls,y:F.oy+F.ny*Ls}, Ls};
+}
 function bandOverlay(){
-  const W=view.width,u=unit(),hp=Math.max(1,Math.round(S.crop.h*prev.height)),{y0,nb}=bandGeo(hp), y1=y0+nb, x2=vctx;
+  const W=view.width,H=view.height,u=unit(),x2=vctx,{F,p1,p2}=bandPoints(), dx=F.ny, dy=-F.nx, M=W+H;
   x2.save();
-  x2.fillStyle='rgba(255,79,139,.13)'; x2.fillRect(0,y0,W,nb);
-  x2.strokeStyle='#ff4f8b'; x2.lineWidth=2*u; x2.setLineDash([8*u,6*u]);
-  x2.beginPath(); x2.moveTo(0,y0); x2.lineTo(W,y0); x2.moveTo(0,y1); x2.lineTo(W,y1); x2.stroke(); x2.setLineDash([]);
-  [y0,y1].forEach(yy=>{ x2.beginPath(); x2.arc(W/2,yy,11*u,0,Math.PI*2); x2.fillStyle='#fff'; x2.fill(); x2.lineWidth=3*u; x2.stroke(); });
+  x2.fillStyle='rgba(255,79,139,.13)'; x2.beginPath();
+  x2.moveTo(p1.x-dx*M,p1.y-dy*M); x2.lineTo(p1.x+dx*M,p1.y+dy*M); x2.lineTo(p2.x+dx*M,p2.y+dy*M); x2.lineTo(p2.x-dx*M,p2.y-dy*M); x2.closePath(); x2.fill();
+  x2.strokeStyle='#ff4f8b'; x2.lineWidth=2*u; x2.setLineDash([8*u,6*u]); x2.beginPath();
+  [p1,p2].forEach(q=>{ x2.moveTo(q.x-dx*M,q.y-dy*M); x2.lineTo(q.x+dx*M,q.y+dy*M); }); x2.stroke(); x2.setLineDash([]);
+  [p1,p2].forEach(q=>{ x2.beginPath(); x2.arc(q.x,q.y,11*u,0,Math.PI*2); x2.fillStyle='#fff'; x2.fill(); x2.lineWidth=3*u; x2.stroke(); });
   x2.restore();
 }
 
@@ -350,17 +391,17 @@ function cropDrag(p,u){
   S.crop={x:x/W,y:y/H,w:w/W,h:h/H};
 }
 function bandHit(p,u){
-  const hp=Math.max(1,Math.round(S.crop.h*prev.height)),{y0,nb}=bandGeo(hp),tol=30*u;
-  const d0=Math.abs(p.y-y0), d1=Math.abs(p.y-(y0+nb));
+  const {F,hp,p1,Ls}=bandPoints(), tol=30*u, v=(p.x-p1.x)*F.nx+(p.y-p1.y)*F.ny;
+  const d0=Math.abs(v), d1=Math.abs(v-Ls);
   if (Math.min(d0,d1)<tol) return {t: d0<=d1?'top':'bot', hp};
-  if (p.y>y0&&p.y<y0+nb) return {t:'band',hp,sy:p.y,t0:S.band.t,b0:S.band.b};
+  if (v>0&&v<Ls) return {t:'band',hp,sx:p.x,sy:p.y,t0:S.band.t,b0:S.band.b};
   return null;
 }
 function bandDrag(p){
-  const hp=drag.hp, s=S.stretch>0.001?S.stretch:0, gap=0.03;
-  if (drag.t==='top') S.band.t=clamp(p.y/hp,0,S.band.b-gap);
-  else if (drag.t==='bot'){ const y0=S.band.t*hp; S.band.b=clamp((y0+(p.y-y0)/(1+s))/hp,S.band.t+gap,1); }
-  else { const len=drag.b0-drag.t0; let t=drag.t0+(p.y-drag.sy)/hp; t=clamp(t,0,1-len); S.band.t=t; S.band.b=t+len; }
+  const hp=drag.hp, F=bandFrame(view.width,hp), gap=0.03;
+  if (drag.t==='top'){ const oy=p.y+(p.x-F.ox)*F.nx/F.ny; S.band.t=clamp(oy/hp,0,S.band.b-gap); }
+  else if (drag.t==='bot'){ const v=(p.x-F.ox)*F.nx+(p.y-F.oy)*F.ny; S.band.b=clamp(S.band.t+v/(1+F.s)/hp,S.band.t+gap,1); }
+  else { const len=drag.b0-drag.t0, dv=(p.x-drag.sx)*F.nx+(p.y-drag.sy)*F.ny; let t=drag.t0+dv/F.ny/hp; t=clamp(t,0,1-len); S.band.t=t; S.band.b=t+len; }
 }
 /* ---------- 消しゴム（周囲の色で自然に埋める） ---------- */
 function eraseOverlay(){
@@ -376,28 +417,153 @@ function eraseOverlay(){
     x.strokeStyle='rgba(0,0,0,.6)'; x.beginPath(); x.arc(cursor.x,cursor.y,r+1.5*u,0,Math.PI*2); x.stroke(); }
   x.restore();
 }
-function applyStroke(st){
-  const s=src.width/prev.width;
-  const ox=Math.round(S.crop.x*prev.width), oy=Math.round(S.crop.y*prev.height);
-  const R=st.r*s*1.15+2, pts=st.pts.map(p=>({x:(p.x+ox)*s, y:(p.y+oy)*s}));
-  const pad=Math.ceil(R+4);
+/* ストロークを指定座標系のマスク（アルファ0-255）にする */
+function strokeMask(st, s, offx, offy, Rmul, Radd, limW, limH, align, extra){
+  const R=st.r*s*Rmul+Radd, pts=st.pts.map(p=>({x:(p.x+offx)*s, y:(p.y+offy)*s}));
+  const pad=Math.ceil(R+2+(extra||0));
   let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
   pts.forEach(p=>{ x0=Math.min(x0,p.x); y0=Math.min(y0,p.y); x1=Math.max(x1,p.x); y1=Math.max(y1,p.y); });
-  x0=clamp(Math.floor(x0-pad),0,src.width); y0=clamp(Math.floor(y0-pad),0,src.height);
-  x1=clamp(Math.ceil(x1+pad),0,src.width); y1=clamp(Math.ceil(y1+pad),0,src.height);
-  const w=x1-x0, h=y1-y0; if (w<2||h<2) return;
-  // マスク作成
+  x0=clamp(Math.floor(x0-pad),0,limW); y0=clamp(Math.floor(y0-pad),0,limH);
+  x1=clamp(Math.ceil(x1+pad),0,limW); y1=clamp(Math.ceil(y1+pad),0,limH);
+  if (align){ x0=Math.floor(x0/align)*align; y0=Math.floor(y0/align)*align; x1=Math.min(limW,Math.ceil(x1/align)*align); y1=Math.min(limH,Math.ceil(y1/align)*align); }
+  const w=x1-x0, h=y1-y0; if (w<2||h<2) return null;
   const mc=mk(w,h), mx=mc.getContext('2d'); mx.fillStyle=mx.strokeStyle='#000'; mx.lineCap=mx.lineJoin='round'; mx.lineWidth=R*2;
   mx.beginPath(); pts.forEach((p,i)=>i?mx.lineTo(p.x-x0,p.y-y0):mx.moveTo(p.x-x0,p.y-y0));
   if (pts.length===1){ mx.arc(pts[0].x-x0,pts[0].y-y0,R,0,Math.PI*2); mx.fill(); } else mx.stroke();
-  const ma=mx.getImageData(0,0,w,h).data, mask=new Uint8Array(w*h);
-  for (let i=0;i<w*h;i++) if (ma[i*4+3]>60) mask[i]=1;
+  const ma=mx.getImageData(0,0,w,h).data, al=new Uint8Array(w*h);
+  for (let i=0;i<w*h;i++) al[i]=ma[i*4+3];
+  return {x0,y0,w,h,al};
+}
+function applyStroke(st){
+  if (mode==='blur') return paintBlurMask(st);
+  const s=src.width/prev.width, ox=Math.round(S.crop.x*prev.width), oy=Math.round(S.crop.y*prev.height);
+  if (mode==='mosaic') return applyMosaic(st,s,ox,oy);
+  const M=strokeMask(st,s,ox,oy,1.15,2,src.width,src.height); if (!M) return;
+  const {x0,y0,w,h,al}=M, mask=new Uint8Array(w*h);
+  for (let i=0;i<w*h;i++) if (al[i]>60) mask[i]=1;
   for (let x=0;x<w;x++){ mask[x]=0; mask[(h-1)*w+x]=0; } for (let y=0;y<h;y++){ mask[y*w]=0; mask[y*w+w-1]=0; }
   const sx=ctx(src), id=sx.getImageData(x0,y0,w,h), before=sx.getImageData(x0,y0,w,h);
   heal(id.data,w,h,mask);
   sx.putImageData(id,x0,y0);
   refreshPrev(x0,y0,w,h);
   pushOp({t:'p',x:x0,y:y0,b:before,a:id});
+}
+/* ---------- ぼかし共通（3回のボックスブラー≒ガウスぼかし） ---------- */
+function blurRGBA(srcD,w,h,r){
+  r=Math.max(1,Math.round(r)); let a=new Uint8ClampedArray(srcD), b=new Uint8ClampedArray(srcD.length);
+  const inv=1/(2*r+1);
+  for (let pass=0;pass<3;pass++){
+    for (let y=0;y<h;y++){ const ro=y*w*4;
+      for (let c=0;c<3;c++){ let sum=0;
+        for (let k=-r;k<=r;k++) sum+=a[ro+clamp(k,0,w-1)*4+c];
+        for (let x=0;x<w;x++){ b[ro+x*4+c]=sum*inv; const xa=x+r+1, xs=x-r; sum+=a[ro+(xa>w-1?w-1:xa)*4+c]-a[ro+(xs<0?0:xs)*4+c]; } }
+      for (let x=0;x<w;x++) b[ro+x*4+3]=a[ro+x*4+3];
+    }
+    for (let x=0;x<w;x++){
+      for (let c=0;c<3;c++){ let sum=0;
+        for (let k=-r;k<=r;k++) sum+=b[(clamp(k,0,h-1)*w+x)*4+c];
+        for (let y=0;y<h;y++){ a[(y*w+x)*4+c]=sum*inv; const ya=y+r+1, ys=y-r; sum+=b[((ya>h-1?h-1:ya)*w+x)*4+c]-b[((ys<0?0:ys)*w+x)*4+c]; } }
+    }
+  }
+  return a;
+}
+function blurFloat(m,w,h,r){
+  r=Math.round(r); if (r<1) return m.slice();
+  let a=m.slice(), b=new Float32Array(m.length); const inv=1/(2*r+1);
+  for (let pass=0;pass<2;pass++){
+    for (let y=0;y<h;y++){ const ro=y*w; let sum=0;
+      for (let k=-r;k<=r;k++) sum+=a[ro+clamp(k,0,w-1)];
+      for (let x=0;x<w;x++){ b[ro+x]=sum*inv; const xa=x+r+1, xs=x-r; sum+=a[ro+(xa>w-1?w-1:xa)]-a[ro+(xs<0?0:xs)]; } }
+    for (let x=0;x<w;x++){ let sum=0;
+      for (let k=-r;k<=r;k++) sum+=b[clamp(k,0,h-1)*w+x];
+      for (let y=0;y<h;y++){ a[y*w+x]=sum*inv; const ya=y+r+1, ys=y-r; sum+=b[(ya>h-1?h-1:ya)*w+x]-b[(ys<0?0:ys)*w+x]; } }
+  }
+  return a;
+}
+/* ---------- モザイク ---------- */
+function applyMosaic(st,s,ox,oy){
+  const bs=Math.max(2,Math.round(mos.size*s)), type=mos.type;
+  const M=strokeMask(st,s,ox,oy,1,0,src.width,src.height,(type==='pixel'||type==='dot')?bs:0,type==='blur'?bs*2:0); if (!M) return;
+  const {x0,y0,w,h,al}=M, sx=ctx(src), id=sx.getImageData(x0,y0,w,h), before=sx.getImageData(x0,y0,w,h), d=id.data;
+  if (type==='pixel'||type==='dot'){
+    for (let by=0;by<h;by+=bs) for (let bx=0;bx<w;bx+=bs){
+      const ex=Math.min(w,bx+bs), ey=Math.min(h,by+bs); let r=0,g=0,b=0,n=0,hit=false;
+      for (let y=by;y<ey;y++) for (let x=bx;x<ex;x++){ const i=y*w+x; r+=d[i*4]; g+=d[i*4+1]; b+=d[i*4+2]; n++; if (al[i]>60) hit=true; }
+      if (!hit) continue; r/=n; g/=n; b/=n;
+      const cx=(bx+ex)/2, cy=(by+ey)/2, rr=(bs*0.42)**2;
+      for (let y=by;y<ey;y++) for (let x=bx;x<ex;x++){ const i=y*w+x; if (al[i]<=60) continue;
+        let k=1; if (type==='dot' && ((x+0.5-cx)**2+(y+0.5-cy)**2)>rr) k=0.55;
+        d[i*4]=r*k; d[i*4+1]=g*k; d[i*4+2]=b*k; }
+    }
+  } else if (type==='blur'){
+    const bl=blurRGBA(d,w,h,Math.max(2,bs*0.7));
+    for (let i=0;i<w*h;i++){ const a=al[i]/255; if (!a) continue; for (let c=0;c<3;c++) d[i*4+c]=d[i*4+c]*(1-a)+bl[i*4+c]*a; }
+  } else {
+    for (let i=0;i<w*h;i++) if (al[i]>60){ d[i*4]=d[i*4+1]=d[i*4+2]=18; }
+  }
+  sx.putImageData(id,x0,y0); refreshPrev(x0,y0,w,h);
+  pushOp({t:'p',x:x0,y:y0,b:before,a:id});
+}
+/* ---------- 背景ぼかし（被写体を自動検出） ---------- */
+async function getSegmenter(){
+  if (segmenter) return segmenter;
+  const V='0.10.21', base=`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${V}`;
+  const vision=await import(`${base}/vision_bundle.mjs`);
+  const fs=await vision.FilesetResolver.forVisionTasks(`${base}/wasm`);
+  segmenter=await vision.ImageSegmenter.createFromOptions(fs,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite',delegate:'CPU'},runningMode:'IMAGE',outputConfidenceMasks:true,outputCategoryMask:false});
+  return segmenter;
+}
+async function detectSubject(){
+  const W=prev.width,H=prev.height, forSrc=src; let m=new Float32Array(W*H);
+  blurState='detecting'; renderPanel();
+  try{
+    const seg=await getSegmenter(); const r=seg.segment(prev); const cm=r.confidenceMasks[0];
+    const bg=cm.getAsFloat32Array(), mw=cm.width, mh=cm.height;
+    for (let y=0;y<H;y++) for (let x=0;x<W;x++){ const sx=Math.min(mw-1,Math.floor(x*mw/W)), sy=Math.min(mh-1,Math.floor(y*mh/H)); m[y*W+x]=1-bg[sy*mw+sx]; }
+    if (r.close) r.close();
+    let sum=0; for (let i=0;i<m.length;i++) sum+=m[i];
+    blurState = sum/m.length>0.01 ? 'ok' : 'none';
+  } catch(e){ console.warn(e); blurState='fail'; }
+  if (src!==forSrc) return;
+  blurMask=m; blurAuto=m.slice(); blurMaskSrc=src; blurDirty=true; renderPanel(); schedule(true);
+}
+function buildBlurPreview(){
+  blurDirty=false; if (!blurMask) { blurPrev=null; blurOv=null; return; }
+  const W=prev.width,H=prev.height, pd=ctx(prev).getImageData(0,0,W,H).data;
+  const key=S.bt.str+'|'+W+'x'+H;
+  if (!blurredCache || blurredCache.key!==key || blurredCache.prev!==prev) blurredCache={key,prev,d:blurRGBA(pd,W,H,S.bt.str)};
+  const bl=blurredCache.d, fm=blurFloat(blurMask,W,H,S.bt.fe);
+  const out=new ImageData(W,H), od=out.data, ov=new ImageData(W,H), vd=ov.data;
+  for (let i=0;i<W*H;i++){ const m=clamp(fm[i],0,1), j=i*4;
+    od[j]=pd[j]*m+bl[j]*(1-m); od[j+1]=pd[j+1]*m+bl[j+1]*(1-m); od[j+2]=pd[j+2]*m+bl[j+2]*(1-m); od[j+3]=255;
+    vd[j]=255; vd[j+1]=79; vd[j+2]=139; vd[j+3]=(1-m)*110; }
+  blurPrev=mk(W,H); ctx(blurPrev).putImageData(out,0,0);
+  blurOv=mk(W,H); ctx(blurOv).putImageData(ov,0,0);
+}
+function blurMaskOverlay(){
+  if (!blurOv||!showMask) return;
+  const ox=Math.round(S.crop.x*prev.width), oy=Math.round(S.crop.y*prev.height);
+  vctx.drawImage(blurOv, ox, oy, view.width, view.height, 0, 0, view.width, view.height);
+}
+function paintBlurMask(st){
+  if (!blurMask) return;
+  const W=prev.width,H=prev.height, ox=Math.round(S.crop.x*W), oy=Math.round(S.crop.y*H);
+  const M=strokeMask(st,1,ox,oy,1,0,W,H); if (!M) return;
+  const before=blurMask.slice(), {x0,y0,w,h,al}=M, add=blurBrush==='add';
+  for (let y=0;y<h;y++) for (let x=0;x<w;x++){ const a=al[y*w+x]/255; if (!a) continue; const i=(y+y0)*W+x+x0;
+    blurMask[i] = add ? Math.max(blurMask[i],a) : Math.min(blurMask[i],1-a); }
+  pushOp({t:'m',b:before,a:blurMask.slice()}); blurDirty=true; schedule(true);
+}
+function applyBlurFinal(){
+  if (!blurMask || blurMaskSrc!==src) return;
+  const W=src.width,H=src.height,pw=prev.width,ph=prev.height,k=W/pw;
+  const fm=blurFloat(blurMask,pw,ph,S.bt.fe), mi=new ImageData(pw,ph);
+  for (let i=0;i<pw*ph;i++) mi.data[i*4+3]=clamp(fm[i],0,1)*255;
+  const mc=mk(pw,ph); ctx(mc).putImageData(mi,0,0);
+  const big=mk(W,H), bx=ctx(big); bx.drawImage(mc,0,0,W,H); const ma=bx.getImageData(0,0,W,H).data;
+  const sd=ctx(src).getImageData(0,0,W,H), d=sd.data, bl=blurRGBA(d,W,H,S.bt.str*k);
+  for (let i=0;i<W*H;i++){ const m=ma[i*4+3]/255, j=i*4; d[j]=d[j]*m+bl[j]*(1-m); d[j+1]=d[j+1]*m+bl[j+1]*(1-m); d[j+2]=d[j+2]*m+bl[j+2]*(1-m); }
+  const nc=mk(W,H); ctx(nc).putImageData(sd,0,0); setSource(nc); blurMask=null; blurPrev=null; blurOv=null;
 }
 function heal(d,w,h,mask){
   const n=w*h, ch=[new Float32Array(n),new Float32Array(n),new Float32Array(n)];
@@ -444,10 +610,12 @@ function recordState(){
   pushOp({t:'s', b:sess.base, a:clone(S), sb:sess.baseSrc, sa:src});
 }
 function revertOp(op){
+  if (op.t==='m'){ blurMask=op.b.slice(); blurDirty=true; return; }
   if (op.t==='s'){ S=clone(op.b); if (src!==op.sb) setSource(op.sb); }
   else { ctx(src).putImageData(op.b,op.x,op.y); refreshPrev(op.x,op.y,op.b.width,op.b.height); }
 }
 function applyOp(op){
+  if (op.t==='m'){ blurMask=op.a.slice(); blurDirty=true; return; }
   if (op.t==='s'){ S=clone(op.a); if (src!==op.sa) setSource(op.sa); }
   else { ctx(src).putImageData(op.a,op.x,op.y); refreshPrev(op.x,op.y,op.a.width,op.a.height); }
 }
@@ -455,7 +623,9 @@ function syncBase(){ if (sess){ sess.base=clone(S); sess.baseSrc=src; } }
 function localUndo(){ if (!sess||!sess.ops.length) return; const op=sess.ops.pop(); revertOp(op); sess.redo.push(op); syncBase(); renderPanel(); updateBars(); schedule(true); }
 function localRedo(){ if (!sess||!sess.redo.length) return; const op=sess.redo.pop(); applyOp(op); sess.ops.push(op); syncBase(); renderPanel(); updateBars(); schedule(true); }
 function finishTool(){
-  if (!sess) return; recordState();
+  if (!sess) return;
+  if (sess.tool==='blur'){ $('#busy').style.display='flex'; try { applyBlurFinal(); } finally { $('#busy').style.display='none'; } }
+  recordState();
   if (sess.ops.length){ hist.splice(hpos); hist.push({tool:sess.tool, ops:sess.ops}); hpos=hist.length; if (hist.length>40){ hist.shift(); hpos--; } toast(`${TOOL_NAMES[sess.tool]}を適用しました`); }
   sess=null; setMode('home');
 }
@@ -468,11 +638,14 @@ function globalUndo(){ if (sess||hpos<=0) return; const e=hist[--hpos]; for (let
 function globalRedo(){ if (sess||hpos>=hist.length) return; const e=hist[hpos++]; e.ops.forEach(applyOp); updateBars(); renderPanel(); schedule(true); toast(`${TOOL_NAMES[e.tool]}をやり直しました`); }
 function appliedTools(){
   const on={};
-  on.crop = S.crop.w<0.999||S.crop.h<0.999||hist.slice(0,hpos).some(e=>e.ops.some(o=>o.t==='s'&&o.sa!==o.sb));
+  const H=hist.slice(0,hpos), used=(tool,f)=>H.some(e=>e.tool===tool&&e.ops.some(f));
+  on.crop = S.crop.w<0.999||S.crop.h<0.999||used('crop',o=>o.t==='s'&&o.sa!==o.sb);
   on.height = S.stretch>0;
   on.color = Object.keys(ADJ_DEF).some(k=>S.adj[k]!==0);
   on.sharp = S.sharp.amount>0;
-  on.erase = hist.slice(0,hpos).some(e=>e.ops.some(o=>o.t==='p'));
+  on.erase = used('erase',o=>o.t==='p');
+  on.mosaic = used('mosaic',o=>o.t==='p');
+  on.blur = used('blur',o=>o.t==='s'&&o.sa!==o.sb);
   return on;
 }
 function updateBars(){
@@ -510,7 +683,7 @@ const stage=$('#stage');
 stage.addEventListener('pointerdown',e=>{
   if (!prev) { $('#file').click(); return; }
   if (comparing) return;
-  if (mode==='erase'){
+  if (BRUSH_MODES.has(mode)){
     pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); stage.setPointerCapture(e.pointerId); e.preventDefault();
     if (pointers.size===2){ stroke=null; pinchStart(); schedule(false); }
     else if (pointers.size===1 && !pinch){ const p=pt(e); stroke={r:brush*unit(), pts:[p]}; cursor=p; schedule(false); }
@@ -521,7 +694,7 @@ stage.addEventListener('pointerdown',e=>{
   if (drag){ stage.setPointerCapture(e.pointerId); e.preventDefault(); }
 });
 stage.addEventListener('pointermove',e=>{
-  if (mode==='erase'){
+  if (BRUSH_MODES.has(mode)){
     if (pointers.has(e.pointerId)) pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
     if (pinch && pointers.size>=2){ pinchMove(); return; }
     const p=pt(e); cursor = e.pointerType==='touch' && !stroke ? null : p;
@@ -532,7 +705,7 @@ stage.addEventListener('pointermove',e=>{
   if (mode==='crop'){ cropDrag(p,unit()); schedule(true); } else { bandDrag(p); schedule(true); }
 });
 ['pointerup','pointercancel'].forEach(ev=>stage.addEventListener(ev,e=>{
-  if (mode==='erase'){
+  if (BRUSH_MODES.has(mode)){
     pointers.delete(e.pointerId);
     if (pinch){ if (pointers.size===0) pinch=null; return; }
     if (stroke && pointers.size===0){ const st=stroke; stroke=null; if (ev==='pointerup') applyStroke(st); if (e.pointerType==='touch') cursor=null; schedule(false); }
@@ -540,8 +713,8 @@ stage.addEventListener('pointermove',e=>{
   }
   if (drag){ drag=null; schedule(true); recordState(); }
 }));
-stage.addEventListener('pointerleave',e=>{ if (mode==='erase' && !stroke){ cursor=null; schedule(false); } });
-stage.addEventListener('wheel',e=>{ if (mode!=='erase'||!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
+stage.addEventListener('pointerleave',e=>{ if (BRUSH_MODES.has(mode) && !stroke){ cursor=null; schedule(false); } });
+stage.addEventListener('wheel',e=>{ if (!BRUSH_MODES.has(mode)||!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
 
 /* ---------- panel ---------- */
 function slider(key,label,min,max,val,step=1){
@@ -562,6 +735,7 @@ function renderPanel(){
   } else if (mode==='height'){
     P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸ばす範囲を指定。帯の中をドラッグすると範囲ごと移動します。</div>
       ${slider('stretch','伸ばす',0,40,Math.round(S.stretch*100))}
+      ${slider('angle','角度',-45,45,S.angle||0)}
       <div class="btns"><button data-act="bandReset">範囲リセット</button></div>`;
   } else if (mode==='color'){
     P.innerHTML = `<div class="hint">ラベルをダブルタップでその項目を0に戻す</div>
@@ -571,6 +745,18 @@ function renderPanel(){
     P.innerHTML = `<div class="hint">消したいシミや汚れをなぞると、周りの色で自然に埋めます。2本指でピンチ拡大・移動（PCはホイールで拡大）。</div>
       ${slider('brush','ブラシ半径',4,60,brush)}
       <div class="btns"><button data-act="zoomReset">拡大を戻す</button></div>`;
+  } else if (mode==='mosaic'){
+    P.innerHTML = `<div class="chips">${MOS_TYPES.map(([k,l])=>`<button class="chip${mos.type===k?' on':''}" data-mos="${k}">${l}</button>`).join('')}</div>
+      ${mos.type!=='black'?slider('msize','粗さ',4,40,mos.size):''}
+      ${slider('brush','ブラシ半径',4,60,brush)}
+      <div class="hint">隠したい所をなぞります。2本指でピンチ拡大・移動。</div>
+      <div class="btns"><button data-act="zoomReset">拡大を戻す</button></div>`;
+  } else if (mode==='blur'){
+    const msg={detecting:'被写体を検出中…（初回はモデルの読み込みに少しかかります）',ok:'人物を自動検出しました。はみ出し・足りない所はブラシで直せます。',none:'人物が見つかりませんでした。「被写体を足す」でなぞってください。',fail:'自動検出できませんでした（通信環境を確認）。ブラシで被写体をなぞってください。'}[blurState]||'';
+    P.innerHTML = `<div class="hint">${msg}</div>
+      <div class="chips"><button class="chip${blurBrush==='add'?' on':''}" data-bb="add">＋ 被写体を足す</button><button class="chip${blurBrush==='remove'?' on':''}" data-bb="remove">－ 背景にする</button><button class="chip${showMask?' on':''}" data-act="mask">範囲を表示</button></div>
+      ${slider('bstr','ぼかしの強さ',2,40,S.bt.str)}${slider('bfe','境界のなめらかさ',0,20,S.bt.fe)}${slider('brush','ブラシ半径',4,60,brush)}
+      <div class="btns"><button data-act="redetect">自動検出に戻す</button><button data-act="zoomReset">拡大を戻す</button></div>`;
   } else {
     P.innerHTML = `${slider('amount','強さ',0,200,S.sharp.amount)}${slider('radius','半径',1,3,S.sharp.radius)}
       <div class="hint">プレビューは縮小表示です。保存時は解像度に合わせて半径を自動調整します。</div>`;
@@ -578,23 +764,30 @@ function renderPanel(){
 }
 function setVal(k,v){
   if (k==='brush'){ brush=v; return; }
+  if (k==='msize'){ mos.size=v; return; }
+  if (k==='angle'){ S.angle=v; return; }
+  if (k==='bstr'||k==='bfe'){ S.bt[k==='bstr'?'str':'fe']=v; blurDirty=true; return; }
   if (k==='stretch') S.stretch=v/100;
   else if (k==='amount'||k==='radius') S.sharp[k]=v;
   else S.adj[k]=v;
 }
 $('#panel').addEventListener('input',e=>{
   const k=e.target.dataset.k; if (!k) return;
-  const v=+e.target.value; setVal(k,v); e.target.nextElementSibling.textContent=v; schedule(k!=='brush');
+  const v=+e.target.value; setVal(k,v); e.target.nextElementSibling.textContent=v; schedule(k!=='brush'&&k!=='msize');
 });
-$('#panel').addEventListener('change',e=>{ if (e.target.dataset.k && e.target.dataset.k!=='brush') recordState(); });
+$('#panel').addEventListener('change',e=>{ const k=e.target.dataset.k; if (k && k!=='brush' && k!=='msize') recordState(); });
 $('#panel').addEventListener('dblclick',e=>{
   const k=e.target.dataset.reset; if (!k) return;
-  const def = k==='radius'?1:k==='brush'?16:0; setVal(k,def); renderPanel(); schedule(true); recordState();
+  const def = {radius:1,brush:16,msize:12,bstr:16,bfe:4}[k] ?? 0; setVal(k,def); renderPanel(); schedule(true); recordState();
 });
 $('#panel').addEventListener('click',e=>{
   const b=e.target.closest('button'); if (!b||!src) return;
   if (b.dataset.asp){ S.aspect=b.dataset.asp; if (S.aspect==='free') S.crop={x:0,y:0,w:1,h:1}; else applyAspect(); renderPanel(); schedule(true); recordState(); return; }
+  if (b.dataset.mos){ mos.type=b.dataset.mos; renderPanel(); return; }
+  if (b.dataset.bb){ blurBrush=b.dataset.bb; renderPanel(); return; }
   const a=b.dataset.act;
+  if (a==='mask'){ showMask=!showMask; renderPanel(); schedule(false); return; }
+  if (a==='redetect'){ if (blurAuto){ const before=blurMask.slice(); blurMask=blurAuto.slice(); pushOp({t:'m',b:before,a:blurMask.slice()}); blurDirty=true; schedule(true); } return; }
   if (a==='rotL'||a==='rotR') rotate(a==='rotL'?-1:1);
   else if (a==='flip') flip();
   else if (a==='cropReset'){ S.aspect='free'; S.crop={x:0,y:0,w:1,h:1}; }
@@ -619,6 +812,7 @@ function setMode(m){
   $('#tabs').hidden = m!=='home'; $('#actbar').hidden = m==='home';
   if (m!=='home') $('#actName').textContent=TOOL_NAMES[m];
   renderPanel(); updateBars(); schedule(false);
+  if (m==='blur'){ blurDirty=true; if (!blurMask || blurMaskSrc!==src) detectSubject(); else { blurState='ok'; renderPanel(); schedule(true); } }
 }
 $('#tabs').addEventListener('click',e=>{ const b=e.target.closest('button'); if (b && src) setMode(b.dataset.m); });
 $('#bDone').onclick=finishTool; $('#bCancel').onclick=cancelTool;
@@ -639,6 +833,7 @@ function applyLast(){
   const b=clone(S);
   S.adj={...ADJ_DEF,...L.adj}; S.sharp={...S.sharp,...L.sharp}; S.stretch=L.stretch||0;
   if (L.band) S.band=L.band;
+  S.angle=L.angle||0;
   if (L.aspect){ S.aspect=L.aspect; if (S.aspect==='free') S.crop={x:0,y:0,w:1,h:1}; else applyAspect(); }
   hist.splice(hpos); hist.push({tool:'last', ops:[{t:'s',b,a:clone(S),sb:src,sa:src}]}); hpos=hist.length;
   renderPanel(); updateBars(); schedule(true); toast('前回の設定を適用しました');
@@ -677,7 +872,7 @@ async function makeBlob(){
     const fmt=$('#fmt').value, q=+$('#q').value/100;
     const blob=await new Promise(r=>out.toBlob(r,fmt,q));
     if (!blob) throw 0;
-    lsSet(LS_KEY,{adj:S.adj,sharp:S.sharp,stretch:S.stretch,band:S.band,aspect:S.aspect});
+    lsSet(LS_KEY,{adj:S.adj,sharp:S.sharp,stretch:S.stretch,band:S.band,aspect:S.aspect,angle:S.angle});
     lsSet(LS_EXP,{fmt,q:$('#q').value,size:$('#size').value});
     const ext=blob.type==='image/png'?'png':blob.type==='image/webp'?'webp':'jpg';
     const d=new Date(), p=n=>String(n).padStart(2,'0');
@@ -702,7 +897,7 @@ $('#dShare').onclick=async()=>{
 window.addEventListener('dragover',e=>e.preventDefault());
 window.addEventListener('drop',e=>{ e.preventDefault(); const f=e.dataTransfer.files[0]; if (f) loadFile(f); });
 window.addEventListener('paste',e=>{ const it=[...(e.clipboardData?.items||[])].find(i=>i.type.startsWith('image/')); if (it) loadFile(it.getAsFile()); });
-window.addEventListener('resize',()=>{ if (mode==='erase'){ resetZoom(); } schedule(false); });
+window.addEventListener('resize',()=>{ if (BRUSH_MODES.has(mode)){ resetZoom(); } schedule(false); });
 
 renderPanel();
 })();
