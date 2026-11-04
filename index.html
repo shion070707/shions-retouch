@@ -105,9 +105,10 @@ const PREV_MAX = 1280, SRC_MAX_PX = 16e6, LS_KEY = 'retouch.last.v1', LS_EXP = '
 const ADJ_DEF = {exposure:0,brightness:0,contrast:0,highlights:0,shadows:0,saturation:0,vibrance:0,temp:0,tint:0};
 const ADJ_META = [['exposure','露出'],['brightness','明るさ'],['contrast','コントラスト'],['highlights','ハイライト'],
   ['shadows','シャドウ'],['saturation','彩度'],['vibrance','自然な彩度'],['temp','色温度'],['tint','色かぶり']];
-const ASPECTS = [['free','自由'],['orig','元比率'],['1:1','1:1'],['4:5','4:5'],['3:4','3:4'],['2:3','2:3'],['9:16','9:16'],['16:9','16:9']];
+const ASPECTS = [['9:16','📱 スマホ縦 9:16'],['free','自由'],['orig','元比率'],['1:1','1:1'],['4:5','4:5'],['3:4','3:4'],['2:3','2:3'],['16:9','16:9']];
+const STRETCH_MAX = 0.4;
 
-const fresh = () => ({crop:{x:0,y:0,w:1,h:1}, aspect:'free', band:{t:0.55,b:0.97}, stretch:0, adj:{...ADJ_DEF}, sharp:{amount:0,radius:1}});
+const fresh = () => ({crop:{x:0,y:0,w:1,h:1}, aspect:'9:16', band:{t:0.55,b:0.97}, stretch:0, adj:{...ADJ_DEF}, sharp:{amount:0,radius:1}});
 let S = fresh(), src = null, prev = null, processed = null, mode = 'crop', comparing = false, dirty = true, raf = 0, drag = null, fileBase = 'image';
 
 /* ---------- helpers ---------- */
@@ -135,7 +136,7 @@ async function loadFile(file){
     let w=img.naturalWidth, h=img.naturalHeight; const k=Math.min(1, Math.sqrt(SRC_MAX_PX/(w*h)));
     w=Math.round(w*k); h=Math.round(h*k);
     const c=mk(w,h); ctx(c).drawImage(img,0,0,w,h);
-    S = fresh(); setSource(c);
+    S = fresh(); setSource(c); applyAspect();
     $('#empty').hidden = true; view.hidden = false;
     ['#bSave','#bCmp'].forEach(s=>$(s).disabled=false);
     $('#bLast').disabled = !lsGet(LS_KEY);
@@ -233,12 +234,26 @@ function blit(c){ if (view.width!==c.width||view.height!==c.height){ view.width=
 const unit = () => { const r=view.getBoundingClientRect(); return r.width ? view.width/r.width : 1; };
 function draw(){
   raf=0; if (!prev) return;
-  if (comparing){ blit(prev); badge(); return; }
-  if (mode==='crop'){ blit(prev); cropOverlay(); badge(); return; }
+  if (comparing){ blit(prev); layoutView(); badge(); return; }
+  if (mode==='crop'){ blit(prev); layoutView(); cropOverlay(); badge(); return; }
   if (dirty){ processed=process(prev,1,1); dirty=false; }
   blit(processed);
+  layoutView();
   if (mode==='height') bandOverlay();
   badge();
+}
+/* 脚長モード：横幅を固定し、伸ばした分だけ下に伸びるように表示 */
+function layoutView(){
+  const st=view.style, sg=stage.style;
+  if (mode!=='height' || comparing){ st.width=st.height=st.marginTop=''; sg.alignItems=''; return; }
+  const cs=getComputedStyle(stage);
+  const aw=stage.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight);
+  const ah=stage.clientHeight-parseFloat(cs.paddingTop)-parseFloat(cs.paddingBottom);
+  const wp=processed.width, hp=Math.max(1,Math.round(S.crop.h*prev.height));
+  const k=Math.min(aw/wp, ah/(hp*(1+STRETCH_MAX)));
+  st.width=(wp*k)+'px'; st.height=(view.height*k)+'px';
+  st.marginTop=Math.max(0,(ah-hp*(1+STRETCH_MAX)*k)/2)+'px';
+  sg.alignItems='flex-start';
 }
 function outSize(){
   const sw=Math.round(S.crop.w*src.width), sh=Math.round(S.crop.h*src.height), g=bandGeo(sh);
