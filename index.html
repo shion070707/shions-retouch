@@ -165,7 +165,7 @@ async function loadFile(file){
     let w=img.naturalWidth, h=img.naturalHeight; const k=Math.min(1, Math.sqrt(SRC_MAX_PX/(w*h)));
     w=Math.round(w*k); h=Math.round(h*k);
     const c=mk(w,h); ctx(c).drawImage(img,0,0,w,h);
-    S = fresh(); hist=[]; hpos=0; sess=null; blurMask=null; blurPrev=null; blurOv=null; blurredCache=null; resetZoom(); setSource(c); applyAspect();
+    S = fresh(); used={}; hist=[]; hpos=0; sess=null; blurMask=null; blurPrev=null; blurOv=null; blurredCache=null; resetZoom(); setSource(c); applyAspect();
     $('#empty').hidden = true; view.hidden = false;
     ['#bSave','#bCmp'].forEach(s=>$(s).disabled=false);
     setMode('home');
@@ -622,11 +622,28 @@ function applyOp(op){
 function syncBase(){ if (sess){ sess.base=clone(S); sess.baseSrc=src; } }
 function localUndo(){ if (!sess||!sess.ops.length) return; const op=sess.ops.pop(); revertOp(op); sess.redo.push(op); syncBase(); renderPanel(); updateBars(); schedule(true); }
 function localRedo(){ if (!sess||!sess.redo.length) return; const op=sess.redo.pop(); applyOp(op); sess.ops.push(op); syncBase(); renderPanel(); updateBars(); schedule(true); }
+/* 完了時：今の見た目を画像本体に焼き込み、各ツールの設定を初期値に戻す（＝効果を何度でも重ねられる） */
+let used={};
+function isIdentity(){ return S.crop.w>0.999&&S.crop.h>0.999&&S.crop.x<0.001&&S.crop.y<0.001&&!(S.stretch>0.001)&&!Object.keys(ADJ_DEF).some(k=>S.adj[k]!==0)&&!(S.sharp.amount>0); }
+function bake(){
+  if (isIdentity()) return false;
+  if (S.crop.w<0.999||S.crop.h<0.999) used.aspect=S.aspect;
+  if (S.stretch>0.001){ used.stretch=S.stretch; used.band=clone(S.band); used.angle=S.angle||0; }
+  if (Object.keys(ADJ_DEF).some(k=>S.adj[k]!==0)) used.adj=clone(S.adj);
+  if (S.sharp.amount>0) used.sharp=clone(S.sharp);
+  const [w,h]=outSize(), k=Math.min(1,Math.sqrt(SRC_MAX_PX/(w*h)));
+  const out=process(src,k,k*src.width/prev.width);
+  setSource(out);
+  S={...fresh(), aspect:'free', bt:S.bt};
+  return true;
+}
+function withBusy(f){ $('#busy').style.display='flex'; try { return f(); } finally { $('#busy').style.display='none'; } }
 function finishTool(){
   if (!sess) return;
-  if (sess.tool==='blur'){ $('#busy').style.display='flex'; try { applyBlurFinal(); } finally { $('#busy').style.display='none'; } }
+  const also = sess.tool!=='crop' && (S.crop.w<0.999||S.crop.h<0.999) ? ['crop'] : [];
+  withBusy(()=>{ if (sess.tool==='blur') applyBlurFinal(); bake(); });
   recordState();
-  if (sess.ops.length){ hist.splice(hpos); hist.push({tool:sess.tool, ops:sess.ops}); hpos=hist.length; if (hist.length>40){ hist.shift(); hpos--; } toast(`${TOOL_NAMES[sess.tool]}を適用しました`); }
+  if (sess.ops.length){ hist.splice(hpos); hist.push({tool:sess.tool, ops:sess.ops, also}); hpos=hist.length; if (hist.length>20){ hist.shift(); hpos--; } toast(`${TOOL_NAMES[sess.tool]}を適用しました`); }
   sess=null; setMode('home');
 }
 function cancelTool(){
@@ -638,14 +655,8 @@ function globalUndo(){ if (sess||hpos<=0) return; const e=hist[--hpos]; for (let
 function globalRedo(){ if (sess||hpos>=hist.length) return; const e=hist[hpos++]; e.ops.forEach(applyOp); updateBars(); renderPanel(); schedule(true); toast(`${TOOL_NAMES[e.tool]}をやり直しました`); }
 function appliedTools(){
   const on={};
-  const H=hist.slice(0,hpos), used=(tool,f)=>H.some(e=>e.tool===tool&&e.ops.some(f));
-  on.crop = S.crop.w<0.999||S.crop.h<0.999||used('crop',o=>o.t==='s'&&o.sa!==o.sb);
-  on.height = S.stretch>0;
-  on.color = Object.keys(ADJ_DEF).some(k=>S.adj[k]!==0);
-  on.sharp = S.sharp.amount>0;
-  on.erase = used('erase',o=>o.t==='p');
-  on.mosaic = used('mosaic',o=>o.t==='p');
-  on.blur = used('blur',o=>o.t==='s'&&o.sa!==o.sb);
+  hist.slice(0,hpos).forEach(e=>{ if (e.tool!=='last') on[e.tool]=(on[e.tool]||0)+1; (e.also||[]).forEach(k=>{ on[k]=on[k]||1; }); });
+  if (!on.crop && (S.crop.w<0.999||S.crop.h<0.999)) on.crop=1;
   return on;
 }
 function updateBars(){
@@ -724,7 +735,7 @@ function renderPanel(){
   const P=$('#panel');
   if (mode==='home'){
     if (!src){ P.innerHTML='<div class="hint">画像を開くと、下のツールで編集できます。</div>'; return; }
-    const on=appliedTools(), names=Object.keys(on).filter(k=>on[k]).map(k=>`<span class="tag">✓ ${TOOL_NAMES[k]}</span>`).join('');
+    const on=appliedTools(), names=Object.keys(TOOL_NAMES).filter(k=>on[k]).map(k=>`<span class="tag">✓ ${TOOL_NAMES[k]}${on[k]>1?' ×'+on[k]:''}</span>`).join('');
     P.innerHTML = `<div class="summary">${names || '<span>まだ何も適用していません。下のツールを選んでください。</span>'}</div>
       ${lsGet(LS_KEY)?'<div class="btns" style="margin-top:8px"><button data-act="last">前回の設定を適用</button></div>':''}`;
     return;
@@ -835,7 +846,8 @@ function applyLast(){
   if (L.band) S.band=L.band;
   S.angle=L.angle||0;
   if (L.aspect){ S.aspect=L.aspect; if (S.aspect==='free') S.crop={x:0,y:0,w:1,h:1}; else applyAspect(); }
-  hist.splice(hpos); hist.push({tool:'last', ops:[{t:'s',b,a:clone(S),sb:src,sa:src}]}); hpos=hist.length;
+  const sb=src; withBusy(bake);
+  hist.splice(hpos); hist.push({tool:'last', ops:[{t:'s',b,a:clone(S),sb,sa:src}]}); hpos=hist.length; if (hist.length>20){ hist.shift(); hpos--; }
   renderPanel(); updateBars(); schedule(true); toast('前回の設定を適用しました');
 }
 
@@ -872,7 +884,8 @@ async function makeBlob(){
     const fmt=$('#fmt').value, q=+$('#q').value/100;
     const blob=await new Promise(r=>out.toBlob(r,fmt,q));
     if (!blob) throw 0;
-    lsSet(LS_KEY,{adj:S.adj,sharp:S.sharp,stretch:S.stretch,band:S.band,aspect:S.aspect,angle:S.angle});
+    { const U={...used}; if (S.crop.w<0.999||S.crop.h<0.999) U.aspect=S.aspect;
+      if (U.adj||U.sharp||U.stretch||U.aspect) lsSet(LS_KEY,{adj:U.adj||{...ADJ_DEF},sharp:U.sharp||{amount:0,radius:1},stretch:U.stretch||0,band:U.band||{t:0.55,b:0.97},aspect:U.aspect||'free',angle:U.angle||0}); }
     lsSet(LS_EXP,{fmt,q:$('#q').value,size:$('#size').value});
     const ext=blob.type==='image/png'?'png':blob.type==='image/webp'?'webp':'jpg';
     const d=new Date(), p=n=>String(n).padStart(2,'0');
