@@ -54,6 +54,8 @@ nav button.done .ok{display:block}
 .row label{font-size:13px}
 .row output{font-size:12px;color:var(--sub);text-align:right;font-variant-numeric:tabular-nums}
 input[type=range]{width:100%;accent-color:var(--acc);height:28px}
+.scale{display:grid;grid-template-columns:6.2em 1fr 2.8em;gap:8px;margin:-6px 0 6px;font-size:10px;color:var(--sub)}
+.scale span:nth-child(1){grid-column:2;grid-row:1;justify-self:start}.scale span:nth-child(2){grid-column:2;grid-row:1;justify-self:center}.scale span:nth-child(3){grid-column:2;grid-row:1;justify-self:end}
 .hint{color:var(--sub);font-size:12px;margin:2px 0 8px;line-height:1.5}
 dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:16px;padding:16px;width:min(92vw,380px)}
 dialog::backdrop{background:rgba(0,0,0,.6)}
@@ -185,13 +187,13 @@ function setSource(c){
 function bandGeo(hp){ // hp: cropped (pre-stretch) height
   const y0=Math.round(S.band.t*hp), y1=Math.round(S.band.b*hp), bh=y1-y0;
   const cs=Math.cos((S.angle||0)*Math.PI/180);
-  const nb = (S.stretch>0.001 && bh>=2) ? bh+Math.round(bh*S.stretch*cs) : bh;
+  const nb = (Math.abs(S.stretch)>0.001 && bh>=2) ? bh+Math.round(bh*S.stretch*cs) : bh;
   return {y0,y1,bh,nb};
 }
 /* 帯の向き（角度付き）：n=伸ばす方向, O=上の線の中心, L=帯の長さ */
 function bandFrame(w,h){
   const th=(S.angle||0)*Math.PI/180, nx=Math.sin(th), ny=Math.cos(th);
-  return {nx,ny,ox:w/2,oy:S.band.t*h,L:(S.band.b-S.band.t)*h,s:S.stretch>0.001?S.stretch:0};
+  return {nx,ny,ox:w/2,oy:S.band.t*h,L:(S.band.b-S.band.t)*h,s:Math.abs(S.stretch)>0.001?S.stretch:0};
 }
 function process(base, k, rScale, noStretch){
   const W=base.width, H=base.height, c=S.crop;
@@ -626,11 +628,11 @@ function localUndo(){ if (!sess||!sess.ops.length) return; const op=sess.ops.pop
 function localRedo(){ if (!sess||!sess.redo.length) return; const op=sess.redo.pop(); applyOp(op); sess.ops.push(op); syncBase(); renderPanel(); updateBars(); schedule(true); }
 /* 完了時：今の見た目を画像本体に焼き込み、各ツールの設定を初期値に戻す（＝効果を何度でも重ねられる） */
 let used={};
-function isIdentity(){ return S.crop.w>0.999&&S.crop.h>0.999&&S.crop.x<0.001&&S.crop.y<0.001&&!(S.stretch>0.001)&&!Object.keys(ADJ_DEF).some(k=>S.adj[k]!==0)&&!(S.sharp.amount>0); }
+function isIdentity(){ return S.crop.w>0.999&&S.crop.h>0.999&&S.crop.x<0.001&&S.crop.y<0.001&&!(Math.abs(S.stretch)>0.001)&&!Object.keys(ADJ_DEF).some(k=>S.adj[k]!==0)&&!(S.sharp.amount>0); }
 function bake(){
   if (isIdentity()) return false;
   if (S.crop.w<0.999||S.crop.h<0.999) used.aspect=S.aspect;
-  if (S.stretch>0.001){ used.stretch=S.stretch; used.band=clone(S.band); used.angle=S.angle||0; }
+  if (Math.abs(S.stretch)>0.001){ used.stretch=S.stretch; used.band=clone(S.band); used.angle=S.angle||0; }
   if (Object.keys(ADJ_DEF).some(k=>S.adj[k]!==0)) used.adj=clone(S.adj);
   if (S.sharp.amount>0) used.sharp=clone(S.sharp);
   const [w,h]=outSize(), k=Math.min(1,Math.sqrt(SRC_MAX_PX/(w*h)));
@@ -730,8 +732,9 @@ stage.addEventListener('pointerleave',e=>{ if (BRUSH_MODES.has(mode) && !stroke)
 stage.addEventListener('wheel',e=>{ if (!BRUSH_MODES.has(mode)||!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
 
 /* ---------- panel ---------- */
+const fmtVal=(k,v)=> k==='stretch' ? (v>0?'+':'')+v+'%' : k==='angle' ? v+'°' : v;
 function slider(key,label,min,max,val,step=1){
-  return `<div class="row"><label data-reset="${key}">${label}</label><input type="range" data-k="${key}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}</output></div>`;
+  return `<div class="row"><label data-reset="${key}">${label}</label><input type="range" data-k="${key}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${fmtVal(key,val)}</output></div>`;
 }
 function renderPanel(){
   const P=$('#panel');
@@ -746,8 +749,9 @@ function renderPanel(){
     P.innerHTML = `<div class="chips">${ASPECTS.map(([k,l])=>`<button class="chip${S.aspect===k?' on':''}" data-asp="${k}">${l}</button>`).join('')}</div>
       <div class="btns"><button data-act="rotL">↺ 左回転</button><button data-act="rotR">↻ 右回転</button><button data-act="flip">⇋ 反転</button><button data-act="cropReset">リセット</button></div>`;
   } else if (mode==='height'){
-    P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸ばす範囲を指定。帯の中をドラッグすると範囲ごと移動します。</div>
-      ${slider('stretch','伸ばす',0,40,Math.round(S.stretch*100))}
+    P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸縮する範囲を指定。スライダーは中央が0、右で伸ばす・左で縮める。ラベルをダブルタップで0に戻ります。帯の中をドラッグすると範囲ごと移動します。</div>
+      ${slider('stretch','伸縮',-40,40,Math.round(S.stretch*100))}
+      <div class="scale"><span>◀ 縮める</span><span>0</span><span>伸ばす ▶</span></div>
       ${slider('angle','角度',-45,45,S.angle||0)}
       <div class="btns"><button data-act="bandReset">範囲リセット</button></div>`;
   } else if (mode==='color'){
@@ -786,7 +790,7 @@ function setVal(k,v){
 }
 $('#panel').addEventListener('input',e=>{
   const k=e.target.dataset.k; if (!k) return;
-  const v=+e.target.value; setVal(k,v); e.target.nextElementSibling.textContent=v; schedule(k!=='brush'&&k!=='msize');
+  const v=+e.target.value; setVal(k,v); e.target.nextElementSibling.textContent=fmtVal(k,v); schedule(k!=='brush'&&k!=='msize');
 });
 $('#panel').addEventListener('change',e=>{ const k=e.target.dataset.k; if (k && k!=='brush' && k!=='msize') recordState(); });
 $('#panel').addEventListener('dblclick',e=>{
