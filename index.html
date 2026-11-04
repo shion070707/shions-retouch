@@ -73,9 +73,10 @@ dialog select{font:inherit;width:100%;background:#26262b;color:var(--fg);border:
 <div id="panel"></div>
 <nav id="tabs">
   <button data-m="crop" class="on">トリミング</button>
-  <button data-m="height">脚長</button>
+  <button data-m="height">高さ</button>
   <button data-m="color">色調</button>
   <button data-m="sharp">シャープ</button>
+  <button data-m="erase">消しゴム</button>
 </nav>
 
 <dialog id="dlg">
@@ -109,6 +110,7 @@ const ASPECTS = [['9:16','📱 スマホ縦 9:16'],['free','自由'],['orig','�
 const STRETCH_MAX = 0.4;
 
 const fresh = () => ({crop:{x:0,y:0,w:1,h:1}, aspect:'9:16', band:{t:0.55,b:0.97}, stretch:0, adj:{...ADJ_DEF}, sharp:{amount:0,radius:1}});
+let procKind='', Z={z:1,tx:0,ty:0}, brush=16, undoStack=[], stroke=null, cursor=null, pointers=new Map(), pinch=null;
 let S = fresh(), src = null, prev = null, processed = null, mode = 'crop', comparing = false, dirty = true, raf = 0, drag = null, fileBase = 'image';
 
 /* ---------- helpers ---------- */
@@ -136,7 +138,7 @@ async function loadFile(file){
     let w=img.naturalWidth, h=img.naturalHeight; const k=Math.min(1, Math.sqrt(SRC_MAX_PX/(w*h)));
     w=Math.round(w*k); h=Math.round(h*k);
     const c=mk(w,h); ctx(c).drawImage(img,0,0,w,h);
-    S = fresh(); setSource(c); applyAspect();
+    S = fresh(); undoStack=[]; resetZoom(); setSource(c); applyAspect();
     $('#empty').hidden = true; view.hidden = false;
     ['#bSave','#bCmp'].forEach(s=>$(s).disabled=false);
     $('#bLast').disabled = !lsGet(LS_KEY);
@@ -157,12 +159,12 @@ function bandGeo(hp){ // hp: cropped (pre-stretch) height
   const nb = (S.stretch>0.001 && bh>=2) ? Math.round(bh*(1+S.stretch)) : bh;
   return {y0,y1,bh,nb};
 }
-function process(base, k, rScale){
+function process(base, k, rScale, noStretch){
   const W=base.width, H=base.height, c=S.crop;
   const sx=Math.round(c.x*W), sy=Math.round(c.y*H), sw=Math.max(1,Math.round(c.w*W)), sh=Math.max(1,Math.round(c.h*H));
   let cv=mk(sw,sh); ctx(cv).drawImage(base,sx,sy,sw,sh,0,0,sw,sh);
   if (k < 0.999) cv = scaleCanvas(cv,k);
-  cv = stretch(cv);
+  if (!noStretch) cv = stretch(cv);
   pixels(cv, rScale);
   return cv;
 }
@@ -236,15 +238,22 @@ function draw(){
   raf=0; if (!prev) return;
   if (comparing){ blit(prev); layoutView(); badge(); return; }
   if (mode==='crop'){ blit(prev); layoutView(); cropOverlay(); badge(); return; }
-  if (dirty){ processed=process(prev,1,1); dirty=false; }
+  const kind = mode==='erase' ? 'e' : 'n';
+  if (dirty || procKind!==kind){ processed=process(prev,1,1,kind==='e'); procKind=kind; dirty=false; }
   blit(processed);
   layoutView();
   if (mode==='height') bandOverlay();
+  if (mode==='erase') eraseOverlay();
   badge();
 }
-/* 脚長モード：横幅を固定し、伸ばした分だけ下に伸びるように表示 */
+/* 高さモード：横幅を固定し、伸ばした分だけ下に伸びるように表示 / 消しゴム：拡大・移動 */
 function layoutView(){
   const st=view.style, sg=stage.style;
+  if (mode==='erase' && !comparing){
+    st.width=st.height=st.marginTop=''; sg.alignItems='';
+    st.transformOrigin='0 0'; st.transform=`translate(${Z.tx}px,${Z.ty}px) scale(${Z.z})`; return;
+  }
+  st.transform='';
   if (mode!=='height' || comparing){ st.width=st.height=st.marginTop=''; sg.alignItems=''; return; }
   const cs=getComputedStyle(stage);
   const aw=stage.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight);
@@ -334,19 +343,145 @@ function bandDrag(p){
   else if (drag.t==='bot'){ const y0=S.band.t*hp; S.band.b=clamp((y0+(p.y-y0)/(1+s))/hp,S.band.t+gap,1); }
   else { const len=drag.b0-drag.t0; let t=drag.t0+(p.y-drag.sy)/hp; t=clamp(t,0,1-len); S.band.t=t; S.band.b=t+len; }
 }
+/* ---------- 消しゴム（周囲の色で自然に埋める） ---------- */
+function eraseOverlay(){
+  const u=unit(), r=brush*u, x=vctx;
+  x.save();
+  if (stroke && stroke.pts.length){
+    x.strokeStyle='rgba(255,79,139,.5)'; x.fillStyle='rgba(255,79,139,.5)'; x.lineCap='round'; x.lineJoin='round';
+    x.lineWidth=stroke.r*2; x.beginPath();
+    stroke.pts.forEach((p,i)=>i?x.lineTo(p.x,p.y):x.moveTo(p.x,p.y));
+    if (stroke.pts.length===1){ x.arc(stroke.pts[0].x,stroke.pts[0].y,stroke.r,0,Math.PI*2); x.fill(); } else x.stroke();
+  }
+  if (cursor){ x.lineWidth=1.5*u; x.strokeStyle='#fff'; x.beginPath(); x.arc(cursor.x,cursor.y,r,0,Math.PI*2); x.stroke();
+    x.strokeStyle='rgba(0,0,0,.6)'; x.beginPath(); x.arc(cursor.x,cursor.y,r+1.5*u,0,Math.PI*2); x.stroke(); }
+  x.restore();
+}
+function applyStroke(st){
+  const s=src.width/prev.width;
+  const ox=Math.round(S.crop.x*prev.width), oy=Math.round(S.crop.y*prev.height);
+  const R=st.r*s*1.15+2, pts=st.pts.map(p=>({x:(p.x+ox)*s, y:(p.y+oy)*s}));
+  const pad=Math.ceil(R+4);
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  pts.forEach(p=>{ x0=Math.min(x0,p.x); y0=Math.min(y0,p.y); x1=Math.max(x1,p.x); y1=Math.max(y1,p.y); });
+  x0=clamp(Math.floor(x0-pad),0,src.width); y0=clamp(Math.floor(y0-pad),0,src.height);
+  x1=clamp(Math.ceil(x1+pad),0,src.width); y1=clamp(Math.ceil(y1+pad),0,src.height);
+  const w=x1-x0, h=y1-y0; if (w<2||h<2) return;
+  // マスク作成
+  const mc=mk(w,h), mx=mc.getContext('2d'); mx.fillStyle=mx.strokeStyle='#000'; mx.lineCap=mx.lineJoin='round'; mx.lineWidth=R*2;
+  mx.beginPath(); pts.forEach((p,i)=>i?mx.lineTo(p.x-x0,p.y-y0):mx.moveTo(p.x-x0,p.y-y0));
+  if (pts.length===1){ mx.arc(pts[0].x-x0,pts[0].y-y0,R,0,Math.PI*2); mx.fill(); } else mx.stroke();
+  const ma=mx.getImageData(0,0,w,h).data, mask=new Uint8Array(w*h);
+  for (let i=0;i<w*h;i++) if (ma[i*4+3]>60) mask[i]=1;
+  for (let x=0;x<w;x++){ mask[x]=0; mask[(h-1)*w+x]=0; } for (let y=0;y<h;y++){ mask[y*w]=0; mask[y*w+w-1]=0; }
+  const sx=ctx(src), id=sx.getImageData(x0,y0,w,h);
+  undoStack.push({x:x0,y:y0,data:sx.getImageData(x0,y0,w,h)}); if (undoStack.length>30) undoStack.shift();
+  heal(id.data,w,h,mask);
+  sx.putImageData(id,x0,y0);
+  refreshPrev(x0,y0,w,h);
+  $('#bUndo') && ($('#bUndo').disabled=false);
+}
+function heal(d,w,h,mask){
+  const n=w*h, ch=[new Float32Array(n),new Float32Array(n),new Float32Array(n)];
+  for (let i=0;i<n;i++){ ch[0][i]=d[i*4]; ch[1][i]=d[i*4+1]; ch[2][i]=d[i*4+2]; }
+  const known=new Uint8Array(n); let todo=0; const idx=[];
+  for (let i=0;i<n;i++){ if (mask[i]){ idx.push(i); todo++; } else known[i]=1; }
+  if (!todo) return;
+  // 外側から内側へ埋める
+  const nb=[-1,1,-w,w,-w-1,-w+1,w-1,w+1];
+  let rest=idx, guard=0;
+  while (rest.length && guard++<4000){
+    const next=[], fill=[];
+    for (const i of rest){
+      let c=0,r=0,g=0,b=0;
+      for (const o of nb){ const j=i+o; if (known[j]){ c++; r+=ch[0][j]; g+=ch[1][j]; b+=ch[2][j]; } }
+      if (c) fill.push(i,r/c,g/c,b/c); else next.push(i);
+    }
+    for (let k=0;k<fill.length;k+=4){ const i=fill[k]; ch[0][i]=fill[k+1]; ch[1][i]=fill[k+2]; ch[2][i]=fill[k+3]; known[i]=1; }
+    if (!fill.length) break; rest=next;
+  }
+  // なめらかにする（境界は固定）
+  const iters=Math.min(250, 20+Math.round(Math.sqrt(todo)*1.5));
+  for (let t=0;t<iters;t++) for (const i of idx) for (let c=0;c<3;c++){ const a=ch[c]; a[i]=(a[i-1]+a[i+1]+a[i-w]+a[i+w])*0.25; }
+  // 周囲の肌の質感（細かいノイズ）を推定して足す
+  let sum=0,cnt=0;
+  for (const i of idx) for (const o of [-3*w,3*w,-3,3]){ const j=i+o; if (j>w&&j<n-w&&!mask[j]&&!mask[j-1]&&!mask[j+1]){ const L=v=>0.299*d[v*4]+0.587*d[v*4+1]+0.114*d[v*4+2]; sum+=Math.abs(L(j)-(L(j-1)+L(j+1)+L(j-w)+L(j+w))/4); cnt++; } }
+  const sig=cnt? Math.min(12, sum/cnt*1.1) : 0;
+  for (const i of idx){ const nz=sig? (Math.random()+Math.random()+Math.random()-1.5)*sig : 0;
+    d[i*4]=ch[0][i]+nz; d[i*4+1]=ch[1][i]+nz; d[i*4+2]=ch[2][i]+nz; }
+}
+function refreshPrev(x,y,w,h){
+  if (prev===src){ dirty=true; schedule(); return; }
+  const s=prev.width/src.width;
+  const px0=Math.max(0,Math.floor(x*s)-1), py0=Math.max(0,Math.floor(y*s)-1);
+  const px1=Math.min(prev.width,Math.ceil((x+w)*s)+1), py1=Math.min(prev.height,Math.ceil((y+h)*s)+1);
+  const pc=ctx(prev); pc.drawImage(src, px0/s, py0/s, (px1-px0)/s, (py1-py0)/s, px0, py0, px1-px0, py1-py0);
+  dirty=true; schedule();
+}
+function undo(){
+  const u=undoStack.pop(); if (!u) return;
+  ctx(src).putImageData(u.data,u.x,u.y); refreshPrev(u.x,u.y,u.data.width,u.data.height);
+  if (!undoStack.length && $('#bUndo')) $('#bUndo').disabled=true;
+}
+function resetZoom(){ Z={z:1,tx:0,ty:0}; }
+function zoomAt(cx,cy,nz){
+  nz=clamp(nz,1,8); const r=view.getBoundingClientRect(), L=r.left-Z.tx, T=r.top-Z.ty;
+  const lx=(cx-L-Z.tx)/Z.z, ly=(cy-T-Z.ty)/Z.z;
+  Z.z=nz; Z.tx=cx-L-lx*nz; Z.ty=cy-T-ly*nz; clampPan(); schedule(false);
+}
+function clampPan(){
+  const bw=view.offsetWidth, bh=view.offsetHeight;
+  Z.tx=clamp(Z.tx,bw*(1-Z.z),0); Z.ty=clamp(Z.ty,bh*(1-Z.z),0);
+}
+function pinchStart(){
+  const [a,b]=[...pointers.values()];
+  pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1, mx:(a.x+b.x)/2, my:(a.y+b.y)/2, z:Z.z, tx:Z.tx, ty:Z.ty};
+}
+function pinchMove(){
+  const [a,b]=[...pointers.values()];
+  const d=Math.hypot(a.x-b.x,a.y-b.y)||1, mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+  const r=view.getBoundingClientRect(), L=r.left-Z.tx, T=r.top-Z.ty;
+  const nz=clamp(pinch.z*d/pinch.d,1,8);
+  const lx=(pinch.mx-L-pinch.tx)/pinch.z, ly=(pinch.my-T-pinch.ty)/pinch.z;
+  Z.z=nz; Z.tx=mx-L-lx*nz; Z.ty=my-T-ly*nz; clampPan(); schedule(false);
+}
+
 const stage=$('#stage');
 stage.addEventListener('pointerdown',e=>{
   if (!prev) { $('#file').click(); return; }
   if (comparing) return;
+  if (mode==='erase'){
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY}); stage.setPointerCapture(e.pointerId); e.preventDefault();
+    if (pointers.size===2){ stroke=null; pinchStart(); schedule(false); }
+    else if (pointers.size===1 && !pinch){ const p=pt(e); stroke={r:brush*unit(), pts:[p]}; cursor=p; schedule(false); }
+    return;
+  }
   const p=pt(e), u=unit();
   drag = mode==='crop' ? cropHit(p,u) : mode==='height' ? bandHit(p,u) : null;
   if (drag){ stage.setPointerCapture(e.pointerId); e.preventDefault(); }
 });
 stage.addEventListener('pointermove',e=>{
+  if (mode==='erase'){
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if (pinch && pointers.size>=2){ pinchMove(); return; }
+    const p=pt(e); cursor = e.pointerType==='touch' && !stroke ? null : p;
+    if (stroke){ const l=stroke.pts[stroke.pts.length-1]; if (Math.hypot(p.x-l.x,p.y-l.y)>stroke.r*0.25) stroke.pts.push(p); }
+    schedule(false); return;
+  }
   if (!drag) return; const p=pt(e);
   if (mode==='crop'){ cropDrag(p,unit()); schedule(true); } else { bandDrag(p); schedule(true); }
 });
-['pointerup','pointercancel'].forEach(ev=>stage.addEventListener(ev,()=>{ if (drag){ drag=null; schedule(true); } }));
+['pointerup','pointercancel'].forEach(ev=>stage.addEventListener(ev,e=>{
+  if (mode==='erase'){
+    pointers.delete(e.pointerId);
+    if (pinch){ if (pointers.size===0) pinch=null; return; }
+    if (stroke && pointers.size===0){ const st=stroke; stroke=null; if (ev==='pointerup') applyStroke(st); if (e.pointerType==='touch') cursor=null; schedule(false); }
+    return;
+  }
+  if (drag){ drag=null; schedule(true); }
+}));
+stage.addEventListener('pointerleave',e=>{ if (mode==='erase' && !stroke){ cursor=null; schedule(false); } });
+stage.addEventListener('wheel',e=>{ if (mode!=='erase'||!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
 
 /* ---------- panel ---------- */
 function slider(key,label,min,max,val,step=1){
@@ -358,30 +493,35 @@ function renderPanel(){
     P.innerHTML = `<div class="chips">${ASPECTS.map(([k,l])=>`<button class="chip${S.aspect===k?' on':''}" data-asp="${k}">${l}</button>`).join('')}</div>
       <div class="btns"><button data-act="rotL">↺ 左回転</button><button data-act="rotR">↻ 右回転</button><button data-act="flip">⇋ 反転</button><button data-act="cropReset">リセット</button></div>`;
   } else if (mode==='height'){
-    P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸ばす範囲（脚など）を指定。帯の中をドラッグすると範囲ごと移動します。</div>
+    P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸ばす範囲を指定。帯の中をドラッグすると範囲ごと移動します。</div>
       ${slider('stretch','伸ばす',0,40,Math.round(S.stretch*100))}
       <div class="btns"><button data-act="bandReset">範囲リセット</button></div>`;
   } else if (mode==='color'){
     P.innerHTML = `<div class="hint">ラベルをダブルタップでその項目を0に戻す</div>
       ${ADJ_META.map(([k,l])=>slider(k,l,-100,100,S.adj[k])).join('')}
       <div class="btns" style="margin-top:6px"><button data-act="adjReset">色調をすべてリセット</button></div>`;
+  } else if (mode==='erase'){
+    P.innerHTML = `<div class="hint">消したいシミや汚れをなぞると、周りの色で自然に埋めます。2本指でピンチ拡大・移動（PCはホイールで拡大）。</div>
+      ${slider('brush','ブラシ半径',4,60,brush)}
+      <div class="btns"><button id="bUndo" data-act="undo"${undoStack.length?'':' disabled'}>↶ 元に戻す</button><button data-act="zoomReset">拡大を戻す</button></div>`;
   } else {
     P.innerHTML = `${slider('amount','強さ',0,200,S.sharp.amount)}${slider('radius','半径',1,3,S.sharp.radius)}
       <div class="hint">プレビューは縮小表示です。保存時は解像度に合わせて半径を自動調整します。</div>`;
   }
 }
 function setVal(k,v){
+  if (k==='brush'){ brush=v; return; }
   if (k==='stretch') S.stretch=v/100;
   else if (k==='amount'||k==='radius') S.sharp[k]=v;
   else S.adj[k]=v;
 }
 $('#panel').addEventListener('input',e=>{
   const k=e.target.dataset.k; if (!k) return;
-  const v=+e.target.value; setVal(k,v); e.target.nextElementSibling.textContent=v; schedule(true);
+  const v=+e.target.value; setVal(k,v); e.target.nextElementSibling.textContent=v; schedule(k!=='brush');
 });
 $('#panel').addEventListener('dblclick',e=>{
   const k=e.target.dataset.reset; if (!k) return;
-  const def = k==='radius'?1:0; setVal(k,def); renderPanel(); schedule(true);
+  const def = k==='radius'?1:k==='brush'?16:0; setVal(k,def); renderPanel(); schedule(true);
 });
 $('#panel').addEventListener('click',e=>{
   const b=e.target.closest('button'); if (!b||!src) return;
@@ -392,19 +532,21 @@ $('#panel').addEventListener('click',e=>{
   else if (a==='cropReset'){ S.aspect='free'; S.crop={x:0,y:0,w:1,h:1}; }
   else if (a==='bandReset'){ S.band={t:0.55,b:0.97}; }
   else if (a==='adjReset'){ S.adj={...ADJ_DEF}; }
+  else if (a==='undo'){ undo(); return; }
+  else if (a==='zoomReset'){ resetZoom(); schedule(false); return; }
   renderPanel(); schedule(true);
 });
 function rotate(dir){
   const c=mk(src.height,src.width), x=ctx(c);
   x.translate(c.width/2,c.height/2); x.rotate(dir*Math.PI/2); x.drawImage(src,-src.width/2,-src.height/2);
-  setSource(c); S.crop={x:0,y:0,w:1,h:1}; applyAspect();
+  setSource(c); S.crop={x:0,y:0,w:1,h:1}; applyAspect(); undoStack=[];
 }
 function flip(){
   const c=mk(src.width,src.height), x=ctx(c); x.translate(c.width,0); x.scale(-1,1); x.drawImage(src,0,0);
-  setSource(c); S.crop.x=1-S.crop.x-S.crop.w;
+  setSource(c); S.crop.x=1-S.crop.x-S.crop.w; undoStack=[];
 }
 function setMode(m){
-  mode=m; document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));
+  mode=m; resetZoom(); stroke=null; cursor=null; pinch=null; pointers.clear(); document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));
   renderPanel(); schedule(false);
 }
 $('#tabs').addEventListener('click',e=>{ const b=e.target.closest('button'); if (b) setMode(b.dataset.m); });
@@ -484,7 +626,7 @@ $('#dShare').onclick=async()=>{
 window.addEventListener('dragover',e=>e.preventDefault());
 window.addEventListener('drop',e=>{ e.preventDefault(); const f=e.dataTransfer.files[0]; if (f) loadFile(f); });
 window.addEventListener('paste',e=>{ const it=[...(e.clipboardData?.items||[])].find(i=>i.type.startsWith('image/')); if (it) loadFile(it.getAsFile()); });
-window.addEventListener('resize',()=>schedule(false));
+window.addEventListener('resize',()=>{ if (mode==='erase'){ resetZoom(); } schedule(false); });
 
 renderPanel();
 })();
