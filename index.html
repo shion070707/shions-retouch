@@ -19,7 +19,7 @@
 html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
   font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;overscroll-behavior:none;-webkit-user-select:none;user-select:none}
 body{display:flex;flex-direction:column;height:100dvh;
-  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)}
 header{display:flex;align-items:center;gap:4px;padding:8px 8px 8px 10px}
 header .title{font-weight:800;margin-right:auto;font-size:15px;letter-spacing:0;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 header button{white-space:nowrap;flex:none;padding:8px 8px}
@@ -27,21 +27,28 @@ header button{white-space:nowrap;flex:none;padding:8px 8px}
 button{font:inherit;color:inherit;background:#26262b;border:1px solid var(--line);border-radius:10px;padding:8px 11px;font-size:13px;cursor:pointer}
 button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
 button:disabled{opacity:.35;pointer-events:none}
-#stage{flex:1;min-height:0;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;padding:14px}
+#stage{flex:1;min-height:0;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;padding:4px}
 #view{max-width:100%;max-height:100%;display:block}
-#empty{position:absolute;inset:14px;border:2px dashed var(--line);border-radius:16px;display:flex;flex-direction:column;
+#empty{position:absolute;inset:10px 10px 200px;border:2px dashed var(--line);border-radius:16px;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:8px;color:var(--sub);text-align:center;cursor:pointer;font-size:14px}
 #empty b{color:var(--fg);font-size:16px}
-#badge{position:absolute;left:50%;bottom:4px;transform:translateX(-50%);font-size:11px;color:var(--sub);background:rgba(0,0,0,.5);padding:2px 8px;border-radius:99px;pointer-events:none;white-space:nowrap}
-#panel{background:var(--panel);border-top:1px solid var(--line);padding:10px 14px;height:clamp(150px,30vh,240px);flex:none;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
-nav{display:flex;background:var(--panel);border-top:1px solid var(--line);overflow-x:auto;scrollbar-width:none;height:64px;flex:none}
+#badge{position:absolute;left:50%;top:4px;z-index:2;transform:translateX(-50%);font-size:11px;color:var(--sub);background:rgba(0,0,0,.5);padding:2px 8px;border-radius:99px;pointer-events:none;white-space:nowrap}
+#dock{position:fixed;left:0;right:0;bottom:0;z-index:5;background:rgba(16,16,18,.68);-webkit-backdrop-filter:blur(14px) saturate(1.2);backdrop-filter:blur(14px) saturate(1.2);
+  border-top:1px solid rgba(255,255,255,.08);padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+#grab{height:16px;display:flex;justify-content:center;align-items:center;touch-action:none;cursor:ns-resize}
+#grab::before{content:'';width:40px;height:4px;border-radius:2px;background:rgba(255,255,255,.4)}
+#grab.nograb{height:6px;cursor:default}#grab.nograb::before{display:none}
+#panel{padding:2px 14px 8px;max-height:var(--ph,96px);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;transition:max-height .18s ease}
+#panel.drag{transition:none}
+#dock button:not(.primary):not(.chip.on):not(.ok2){background:rgba(40,40,46,.75)}
+nav{display:flex;border-top:1px solid rgba(255,255,255,.08);overflow-x:auto;scrollbar-width:none;height:54px}
 nav::-webkit-scrollbar{display:none}
-nav button{flex:1 0 62px;border:none;background:none;border-radius:0;padding:9px 0 11px;color:var(--fg);font-size:12px;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative}
-nav button .ic{font-size:20px;line-height:1}
+#dock nav button{flex:1 0 62px;border:none;background:none;border-radius:0;padding:6px 0 7px;color:var(--fg);font-size:12px;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative}
+nav button .ic{font-size:18px;line-height:1}
 nav button .ok{position:absolute;top:4px;left:calc(50% + 8px);width:16px;height:16px;border-radius:50%;background:var(--acc);color:#fff;font-size:10px;line-height:16px;font-weight:800;display:none}
 nav button.done .ok{display:block}
-#actbar{display:flex;align-items:center;gap:6px;background:var(--panel);border-top:1px solid var(--line);padding:0 10px;height:64px;flex:none;box-sizing:border-box}
-#actbar button{font-size:15px;padding:9px 12px;min-width:46px}
+#actbar{display:flex;align-items:center;gap:6px;border-top:1px solid rgba(255,255,255,.08);padding:0 10px;height:54px;box-sizing:border-box}
+#actbar button{font-size:15px;padding:7px 12px;min-width:44px}
 #actbar .name{flex:1;text-align:center;font-weight:700;font-size:14px}
 #actbar .name small{display:block;color:var(--acc);font-weight:600;font-size:11px}
 #actbar .ok2{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:800}
@@ -65,7 +72,7 @@ dialog select{font:inherit;width:100%;background:#26262b;color:var(--fg);border:
 .field>span{display:block;font-size:12px;color:var(--sub);margin-bottom:4px}
 .dlgbtns{display:flex;gap:6px;justify-content:flex-end;margin-top:14px}
 #busy{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:9;font-size:14px}
-#toast{position:fixed;left:50%;bottom:120px;transform:translateX(-50%);background:#333;color:#fff;padding:8px 14px;border-radius:99px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:10;white-space:nowrap}
+#toast{position:fixed;left:50%;top:64px;transform:translateX(-50%);background:#333;color:#fff;padding:8px 14px;border-radius:99px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:10;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -85,6 +92,8 @@ dialog select{font:inherit;width:100%;background:#26262b;color:var(--fg);border:
   <div id="badge" hidden></div>
 </div>
 
+<div id="dock">
+<div id="grab"></div>
 <div id="panel"></div>
 <nav id="tabs">
   <button data-m="crop"><span class="ic">⛶</span>トリミング<span class="ok">✓</span></button>
@@ -101,6 +110,7 @@ dialog select{font:inherit;width:100%;background:#26262b;color:var(--fg);border:
   <div class="name"><span id="actName"></span><small>編集中</small></div>
   <button id="bLRedo" title="進む" disabled>↷</button>
   <button id="bDone" class="ok2" title="完了">✓ 完了</button>
+</div>
 </div>
 
 <dialog id="dlg">
@@ -320,7 +330,8 @@ function layoutView(){
   const wp=processed.width, hp=Math.max(1,Math.round(S.crop.h*prev.height));
   const k=Math.min(aw/wp, ah/hp), mt=Math.max(0,(ah-hp*k)/2), ch=view.height*k;
   st.width=(wp*k)+'px'; st.height=ch+'px'; st.marginTop=mt+'px'; st.maxHeight='none';
-  HY=clamp(HY, Math.min(0, ah-mt-ch), 0);
+  const dh=$('#dock').offsetHeight||0;
+  HY=clamp(HY, Math.min(0, ah-dh-mt-ch), 0);
   st.transformOrigin='0 0'; st.transform=`translateY(${HY}px)`;
   sg.alignItems='flex-start';
 }
@@ -742,12 +753,33 @@ stage.addEventListener('pointermove',e=>{
 stage.addEventListener('pointerleave',e=>{ if (BRUSH_MODES.has(mode) && !stroke){ cursor=null; schedule(false); } });
 stage.addEventListener('wheel',e=>{ if (mode==='height'&&prev){ e.preventDefault(); HY-=e.deltaY; schedule(false); return; } if (!BRUSH_MODES.has(mode)||!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
 
+/* ---------- 下部パネル（半透明・引き出し式） ---------- */
+const PANEL_MIN=96, grab=$('#grab'), panelEl=$('#panel');
+let panelOpen=false, gdrag=null;
+const panelMax=()=>Math.round(innerHeight*0.6);
+function setPanelH(h){ panelEl.style.setProperty('--ph', h+'px'); }
+function fitPanel(){
+  const need=panelEl.scrollHeight>PANEL_MIN+6;
+  grab.classList.toggle('nograb',!need);
+  if (!need) panelOpen=false;
+  setPanelH(panelOpen?panelMax():PANEL_MIN);
+}
+grab.addEventListener('pointerdown',e=>{ if (grab.classList.contains('nograb')) return; grab.setPointerCapture(e.pointerId); gdrag={y:e.clientY,h:panelEl.clientHeight,moved:false}; panelEl.classList.add('drag'); });
+grab.addEventListener('pointermove',e=>{ if (!gdrag) return; const dy=gdrag.y-e.clientY; if (Math.abs(dy)>4) gdrag.moved=true; setPanelH(clamp(gdrag.h+dy,PANEL_MIN,panelMax())); });
+['pointerup','pointercancel'].forEach(ev=>grab.addEventListener(ev,()=>{ if (!gdrag) return; panelEl.classList.remove('drag');
+  const h=panelEl.clientHeight; panelOpen = gdrag.moved ? h>(PANEL_MIN+panelMax())/2 : !panelOpen; gdrag=null; setPanelH(panelOpen?panelMax():PANEL_MIN); }));
+/* パネル内を上にスクロールしようとしたら自動で引き出す */
+panelEl.addEventListener('wheel',e=>{ if (!panelOpen && e.deltaY>0 && !grab.classList.contains('nograb')){ panelOpen=true; setPanelH(panelMax()); } },{passive:true});
+let ptouch=null;
+panelEl.addEventListener('touchstart',e=>{ ptouch=e.touches[0].clientY; },{passive:true});
+panelEl.addEventListener('touchmove',e=>{ if (ptouch!=null && !panelOpen && ptouch-e.touches[0].clientY>12 && !grab.classList.contains('nograb') && e.target.type!=='range'){ panelOpen=true; setPanelH(panelMax()); ptouch=null; } },{passive:true});
 /* ---------- panel ---------- */
 const fmtVal=(k,v)=> k==='stretch' ? (v>0?'+':'')+v+'%' : k==='angle' ? v+'°' : v;
 function slider(key,label,min,max,val,step=1){
   return `<div class="row"><label data-reset="${key}">${label}</label><input type="range" data-k="${key}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${fmtVal(key,val)}</output></div>`;
 }
-function renderPanel(){
+function renderPanel(){ renderPanelInner(); fitPanel(); }
+function renderPanelInner(){
   const P=$('#panel');
   if (mode==='home'){
     if (!src){ P.innerHTML='<div class="hint">画像を開くと、下のツールで編集できます。</div>'; return; }
@@ -835,7 +867,7 @@ function flip(){
   setSource(c); S.crop.x=1-S.crop.x-S.crop.w;
 }
 function setMode(m){
-  mode=m; resetZoom(); HY=0; hpan=null; stroke=null; cursor=null; pinch=null; pointers.clear();
+  mode=m; panelOpen=false; resetZoom(); HY=0; hpan=null; stroke=null; cursor=null; pinch=null; pointers.clear();
   if (m!=='home' && !sess) sess={tool:m, ops:[], redo:[], base:clone(S), baseSrc:src};
   $('#tabs').hidden = m!=='home'; $('#actbar').hidden = m==='home';
   if (m!=='home') $('#actName').textContent=TOOL_NAMES[m];
@@ -927,7 +959,7 @@ $('#dShare').onclick=async()=>{
 window.addEventListener('dragover',e=>e.preventDefault());
 window.addEventListener('drop',e=>{ e.preventDefault(); const f=e.dataTransfer.files[0]; if (f) loadFile(f); });
 window.addEventListener('paste',e=>{ const it=[...(e.clipboardData?.items||[])].find(i=>i.type.startsWith('image/')); if (it) loadFile(it.getAsFile()); });
-window.addEventListener('resize',()=>{ if (BRUSH_MODES.has(mode)){ resetZoom(); } schedule(false); });
+window.addEventListener('resize',()=>{ fitPanel(); if (BRUSH_MODES.has(mode)){ resetZoom(); } schedule(false); });
 
 renderPanel();
 })();
