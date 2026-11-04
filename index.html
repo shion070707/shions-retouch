@@ -33,14 +33,14 @@ button:disabled{opacity:.35;pointer-events:none}
   align-items:center;justify-content:center;gap:8px;color:var(--sub);text-align:center;cursor:pointer;font-size:14px}
 #empty b{color:var(--fg);font-size:16px}
 #badge{position:absolute;left:50%;bottom:4px;transform:translateX(-50%);font-size:11px;color:var(--sub);background:rgba(0,0,0,.5);padding:2px 8px;border-radius:99px;pointer-events:none;white-space:nowrap}
-#panel{background:var(--panel);border-top:1px solid var(--line);padding:10px 14px;max-height:40vh;overflow-y:auto;min-height:56px}
-nav{display:flex;background:var(--panel);border-top:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+#panel{background:var(--panel);border-top:1px solid var(--line);padding:10px 14px;height:clamp(150px,30vh,240px);flex:none;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+nav{display:flex;background:var(--panel);border-top:1px solid var(--line);overflow-x:auto;scrollbar-width:none;height:64px;flex:none}
 nav::-webkit-scrollbar{display:none}
 nav button{flex:1 0 62px;border:none;background:none;border-radius:0;padding:9px 0 11px;color:var(--fg);font-size:12px;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative}
 nav button .ic{font-size:20px;line-height:1}
 nav button .ok{position:absolute;top:4px;left:calc(50% + 8px);width:16px;height:16px;border-radius:50%;background:var(--acc);color:#fff;font-size:10px;line-height:16px;font-weight:800;display:none}
 nav button.done .ok{display:block}
-#actbar{display:flex;align-items:center;gap:6px;background:var(--panel);border-top:1px solid var(--line);padding:8px 10px 10px}
+#actbar{display:flex;align-items:center;gap:6px;background:var(--panel);border-top:1px solid var(--line);padding:0 10px;height:64px;flex:none;box-sizing:border-box}
 #actbar button{font-size:15px;padding:9px 12px;min-width:46px}
 #actbar .name{flex:1;text-align:center;font-weight:700;font-size:14px}
 #actbar .name small{display:block;color:var(--acc);font-weight:600;font-size:11px}
@@ -141,6 +141,7 @@ let mos={type:'pixel', size:12};
 let blurMask=null, blurAuto=null, blurMaskSrc=null, blurState='', blurDirty=true, blurPrev=null, blurOv=null, blurredCache=null, blurBrush='add', showMask=true, segmenter=null;
 const clone=o=>JSON.parse(JSON.stringify(o));
 let hist=[], hpos=0, sess=null;
+let HY=0, hpan=null;
 let procKind='', Z={z:1,tx:0,ty:0}, brush=16, stroke=null, cursor=null, pointers=new Map(), pinch=null;
 let S = fresh(), src = null, prev = null, processed = null, mode = 'home', comparing = false, dirty = true, raf = 0, drag = null, fileBase = 'image';
 
@@ -312,14 +313,15 @@ function layoutView(){
     st.transformOrigin='0 0'; st.transform=`translate(${Z.tx}px,${Z.ty}px) scale(${Z.z})`; return;
   }
   st.transform='';
-  if (mode!=='height' || comparing){ st.width=st.height=st.marginTop=''; sg.alignItems=''; return; }
+  if (mode!=='height' || comparing){ st.width=st.height=st.marginTop=st.maxHeight=''; sg.alignItems=''; return; }
   const cs=getComputedStyle(stage);
   const aw=stage.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight);
   const ah=stage.clientHeight-parseFloat(cs.paddingTop)-parseFloat(cs.paddingBottom);
   const wp=processed.width, hp=Math.max(1,Math.round(S.crop.h*prev.height));
-  const k=Math.min(aw/wp, ah/(hp*(1+STRETCH_MAX)));
-  st.width=(wp*k)+'px'; st.height=(view.height*k)+'px';
-  st.marginTop=Math.max(0,(ah-hp*(1+STRETCH_MAX)*k)/2)+'px';
+  const k=Math.min(aw/wp, ah/hp), mt=Math.max(0,(ah-hp*k)/2), ch=view.height*k;
+  st.width=(wp*k)+'px'; st.height=ch+'px'; st.marginTop=mt+'px'; st.maxHeight='none';
+  HY=clamp(HY, Math.min(0, ah-mt-ch), 0);
+  st.transformOrigin='0 0'; st.transform=`translateY(${HY}px)`;
   sg.alignItems='flex-start';
 }
 function outSize(){
@@ -704,11 +706,19 @@ stage.addEventListener('pointerdown',e=>{
     else if (pointers.size===1 && !pinch){ const p=pt(e); stroke={r:brush*unit(), pts:[p]}; cursor=p; schedule(false); }
     return;
   }
+  if (mode==='height'){
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if (pointers.size>=2){ drag=null; const v=[...pointers.values()]; hpan={y0:(v[0].y+v[1].y)/2, HY0:HY}; stage.setPointerCapture(e.pointerId); e.preventDefault(); return; }
+  }
   const p=pt(e), u=unit();
   drag = mode==='crop' ? cropHit(p,u) : mode==='height' ? bandHit(p,u) : null;
   if (drag){ stage.setPointerCapture(e.pointerId); e.preventDefault(); }
 });
 stage.addEventListener('pointermove',e=>{
+  if (mode==='height' && pointers.has(e.pointerId)){
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if (hpan && pointers.size>=2){ const v=[...pointers.values()]; HY=hpan.HY0+((v[0].y+v[1].y)/2-hpan.y0); schedule(false); return; }
+  }
   if (BRUSH_MODES.has(mode)){
     if (pointers.has(e.pointerId)) pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
     if (pinch && pointers.size>=2){ pinchMove(); return; }
@@ -726,10 +736,11 @@ stage.addEventListener('pointermove',e=>{
     if (stroke && pointers.size===0){ const st=stroke; stroke=null; if (ev==='pointerup') applyStroke(st); if (e.pointerType==='touch') cursor=null; schedule(false); }
     return;
   }
+  if (mode==='height'){ pointers.delete(e.pointerId); if (hpan){ if (pointers.size<2) hpan=null; return; } }
   if (drag){ drag=null; schedule(true); recordState(); }
 }));
 stage.addEventListener('pointerleave',e=>{ if (BRUSH_MODES.has(mode) && !stroke){ cursor=null; schedule(false); } });
-stage.addEventListener('wheel',e=>{ if (!BRUSH_MODES.has(mode)||!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
+stage.addEventListener('wheel',e=>{ if (mode==='height'&&prev){ e.preventDefault(); HY-=e.deltaY; schedule(false); return; } if (!BRUSH_MODES.has(mode)||!prev) return; e.preventDefault(); zoomAt(e.clientX,e.clientY,Z.z*Math.exp(-e.deltaY*0.0015)); },{passive:false});
 
 /* ---------- panel ---------- */
 const fmtVal=(k,v)=> k==='stretch' ? (v>0?'+':'')+v+'%' : k==='angle' ? v+'°' : v;
@@ -749,7 +760,7 @@ function renderPanel(){
     P.innerHTML = `<div class="chips">${ASPECTS.map(([k,l])=>`<button class="chip${S.aspect===k?' on':''}" data-asp="${k}">${l}</button>`).join('')}</div>
       <div class="btns"><button data-act="rotL">↺ 左回転</button><button data-act="rotR">↻ 右回転</button><button data-act="flip">⇋ 反転</button><button data-act="cropReset">リセット</button></div>`;
   } else if (mode==='height'){
-    P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸縮する範囲を指定。スライダーは中央が0、右で伸ばす・左で縮める。ラベルをダブルタップで0に戻ります。帯の中をドラッグすると範囲ごと移動します。</div>
+    P.innerHTML = `<div class="hint">ピンクの2本線をドラッグして伸縮する範囲を指定。スライダーは中央が0、右で伸ばす・左で縮める。ラベルをダブルタップで0に戻ります。帯の中をドラッグすると範囲ごと移動。伸ばして下にはみ出した分は2本指（PCはホイール）で上下にスクロールできます。</div>
       ${slider('stretch','伸縮',-40,40,Math.round(S.stretch*100))}
       <div class="scale"><span>◀ 縮める</span><span>0</span><span>伸ばす ▶</span></div>
       ${slider('angle','角度',-45,45,S.angle||0)}
@@ -824,7 +835,7 @@ function flip(){
   setSource(c); S.crop.x=1-S.crop.x-S.crop.w;
 }
 function setMode(m){
-  mode=m; resetZoom(); stroke=null; cursor=null; pinch=null; pointers.clear();
+  mode=m; resetZoom(); HY=0; hpan=null; stroke=null; cursor=null; pinch=null; pointers.clear();
   if (m!=='home' && !sess) sess={tool:m, ops:[], redo:[], base:clone(S), baseSrc:src};
   $('#tabs').hidden = m!=='home'; $('#actbar').hidden = m==='home';
   if (m!=='home') $('#actName').textContent=TOOL_NAMES[m];
