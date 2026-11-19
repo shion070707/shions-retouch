@@ -211,7 +211,7 @@ function makeOrb(type,x,y,r,vx,vy,hi){
 function spawnOrb(type,px,py){
   if(px===undefined)pending--;
   type=type||pickType();
-  var r=rand(26,46)*SCALE*(type==='n'?1:1.12),x=px,y=py;
+  var r=type==='time'?19*SCALE:rand(26,46)*SCALE*(type==='n'?1:1.12),x=px,y=py;
   if(x===undefined){for(var k=0;k<14;k++){x=rand(r+8,W-r-8);y=rand(r+48,H-r-16);
     var ok=true;for(var j=0;j<orbs.length;j++){var o=orbs[j];if(Math.hypot(o.x-x,o.y-y)<o.r+r+10){ok=false;break;}}if(ok)break;}}
   var a=rand(0,TAU),sp=rand(14,42)*SCALE*(fever?1.6:1);
@@ -272,7 +272,7 @@ function explode(o,opt){
   rings.push({x:o.x,y:o.y,r0:o.r*0.8,r1:o.r*(3.2+power),life:0.45,max:0.45,h:o.type==='rain'?bgHue:HUES[hi],w:7*SCALE});
   splat(o.x,o.y,o.r,hi,power>1.2||o.type!=='n');
   shake=Math.min(30,shake+5*power);flash=Math.min(0.6,flash+0.035*power);
-  pushAway(o.x,o.y,o.r*5,480*power,o);
+  if(o.type!=='time')pushAway(o.x,o.y,o.r*5,480*power,o);
   addCount(o.type==='gold'?10:1);
   addGauge(opt.chain?0.012:(o.type==='n'?0.05:0.075));
   sPop(combo,power);vib(power>1.2?28:16);
@@ -288,11 +288,10 @@ function explode(o,opt){
       var m=makeOrb('n',o.x,o.y,o.r*rand(0.45,0.55),Math.cos(a)*sp,Math.sin(a)*sp,ri(HUES.length));m.base=rand(20,45)*SCALE;orbs.push(m);}}
   else if(o.type==='hard'){sShatter();shake=Math.min(40,shake+10);flash=Math.min(0.8,flash+0.2);vib([20,20,50]);
     rings.push({x:o.x,y:o.y,r0:o.r,r1:o.r*6,life:0.6,max:0.6,h:-1,w:10*SCALE});}
-  else if(o.type==='time'){var R2=160*SCALE;sTime();sBomb();shake=Math.min(40,shake+12);flash=Math.min(0.8,flash+0.25);vib([20,20,20,20,60]);
+  else if(o.type==='time'){sTime();shake=Math.min(30,shake+6);flash=Math.min(0.8,flash+0.15);vib([20,20,20,20,60]);
     if(mode==='play'){timeLeft+=10;timePop=1;floats.push({x:o.x,y:o.y,text:'+10',t0:T});floats.push({x:W/2,y:62,text:'+10',t0:T,small:true});}
-    rings.push({x:o.x,y:o.y,r0:o.r,r1:R2,life:0.5,max:0.5,h:168,w:14*SCALE});
-    burstGlows(o.x,o.y,40,1100,function(){return Math.random()<0.5?-1:6;},16);
-    chainAround(o.x,o.y,R2,1300,1.2);pushAway(o.x,o.y,R2*2,700);}
+    rings.push({x:o.x,y:o.y,r0:o.r,r1:o.r*4,life:0.4,max:0.4,h:168,w:8*SCALE});
+    burstGlows(o.x,o.y,30,700,function(){return Math.random()<0.5?-1:6;},12);}
   else if(o.type==='rain'){if(fever){feverEnd+=4;}else{gauge=1;at(T+0.1,startFever);}}
 }
 function unlockFx(i){
@@ -400,7 +399,7 @@ function update(dt){
   while(orbs.length+pending<target()){pending++;at(T+(fever?rand(0.03,0.2):rand(0.12,0.7))+pending*(fever?0.015:0.04),spawnOrb);}
   if(mode==='play'){timeLeft-=dt;
     var sec=Math.ceil(timeLeft);if(timeLeft<=5&&sec!==lastTick&&sec>0){lastTick=sec;sTick(sec<=3);vib(10);}
-    if(T>=nextTB&&countType('time')===0){pending++;var tb=spawnOrb('time');tb.expire=T+4.5;nextTB=T+rand(7,11);}
+    if(T>=nextTB&&countType('time')===0){pending++;var tb=spawnOrb('time');tb.expire=T+2;nextTB=T+rand(7,11);}
     if(timeLeft<=0){endRun();}}
   orbs.forEach(function(o){if(o.expire&&T>o.expire&&o.alive){o.alive=false;burstGlows(o.x,o.y,16,300,function(){return 6;},8);}});
   if(mode!=='play')orbs.forEach(function(o){if(o.type==='time'&&o.alive&&!o.expire)o.expire=T;});
@@ -470,7 +469,7 @@ function draw(){
   var i;
   // orbs
   for(i=0;i<orbs.length;i++){var o=orbs[i],age=T-o.t0;if(age<0)continue;
-    if(o.expire&&o.expire-T<1.5&&Math.sin(T*28)<0)continue;
+    if(o.expire&&o.expire-T<0.7&&Math.sin(T*34)<0)continue;
     var sc=age<0.45?Math.max(0,easeOutBack(age/0.45)):1,w=1+Math.sin(o.ph)*0.035+(o.squash||0)*0.18*Math.sin(age*40);
     var s=o.r*sc/OR*(1+beat*0.06),jx=o.doomed?rand(-2,2):0,ox=o.x+sx+jx,oy=o.y+sy;
     if(o.type==='rain'){var ra=T*1.6,cs=Math.cos(ra)*s,sn=Math.sin(ra)*s;ctx.setTransform(DPR*cs,DPR*sn,-DPR*sn,DPR*cs,DPR*ox,DPR*oy);ctx.drawImage(SPR.rain,-OR*2,-OR*2);}
